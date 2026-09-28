@@ -78,8 +78,63 @@ internal static class Program
             return 2;
         }
 
+        try { SelfTestArchiveExtraction(); }
+        catch (Exception error)
+        {
+            Log("Self-test failed. Archive extraction: " + error);
+            return 3;
+        }
+
         Log("Self-test passed. Portable version: " + LoadManifest().PortableVersion);
         return 0;
+    }
+
+    private static void SelfTestArchiveExtraction()
+    {
+        var longEntry = "app/" + new string('a', 71) + "/" + new string('b', 70) + "/" + new string('c', 56) + ".txt";
+        var testRoot = CreateShortScratchDirectory(longEntry.Length + 5);
+        var archive = Path.Combine(testRoot, "self-test.zip");
+        var extraction = Path.Combine(testRoot, "out");
+        try
+        {
+            Directory.CreateDirectory(extraction);
+            using (var file = File.Create(archive))
+            using (var zip = new ZipArchive(file, ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(zip.CreateEntry(longEntry).Open()))
+            {
+                writer.Write("ok");
+            }
+
+            ExtractSafely(archive, extraction);
+            var extractedFile = Path.Combine(extraction, longEntry.Replace('/', Path.DirectorySeparatorChar));
+            if (File.ReadAllText(extractedFile) != "ok")
+                throw new InvalidDataException("Long-path archive entry was not extracted correctly.");
+
+            var unsafeArchive = Path.Combine(testRoot, "unsafe.zip");
+            using (var file = File.Create(unsafeArchive))
+            using (var zip = new ZipArchive(file, ZipArchiveMode.Create))
+            using (var writer = new StreamWriter(zip.CreateEntry("../escaped.txt").Open()))
+            {
+                writer.Write("no");
+            }
+
+            var rejected = false;
+            try { ExtractSafely(unsafeArchive, Path.Combine(testRoot, "bad")); }
+            catch (InvalidDataException) { rejected = true; }
+            if (!rejected || File.Exists(Path.Combine(testRoot, "escaped.txt")))
+                throw new InvalidDataException("Unsafe archive path was not rejected.");
+
+            var installed = Path.Combine(testRoot, "installed");
+            var update = Path.Combine(testRoot, "update");
+            Directory.CreateDirectory(Path.Combine(installed, "app"));
+            Directory.CreateDirectory(Path.Combine(update, "app"));
+            File.WriteAllText(Path.Combine(installed, "app", "marker.txt"), "old");
+            File.WriteAllText(Path.Combine(update, "app", "marker.txt"), "new");
+            ReplacePackage(update, installed);
+            if (File.ReadAllText(Path.Combine(installed, "app", "marker.txt")) != "new")
+                throw new InvalidDataException("Package replacement self-test failed.");
+        }
+        finally { TryDeleteDirectory(testRoot); }
     }
 
     private static List<string> GetMissingPackageFiles(string root)
@@ -320,8 +375,7 @@ internal static class Program
             var release = GetLatestRelease(manifest);
             if (release == null) throw new InvalidDataException("No portable release was found.");
             archive = DownloadVerifiedArchive(release);
-            staging = Path.Combine(Path.GetTempPath(), "PiWebPortableVerify-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(staging);
+            staging = CreateShortStagingDirectory(archive);
             ExtractSafely(archive, staging);
             EnsureCompletePackage(staging);
 
@@ -354,11 +408,10 @@ internal static class Program
         try
         {
             WaitForParent(parentPid);
-            StopManagedServerAt(target);
-            var staging = Path.Combine(Path.GetTempPath(), "PiWebPortableExtract-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(staging);
+            var staging = CreateShortStagingDirectory(archive);
             ExtractSafely(archive, staging);
             EnsureCompletePackage(staging);
+            StopManagedServerAt(target);
             ReplacePackage(staging, target);
             TryDelete(archive);
             TryDeleteDirectory(staging);
@@ -386,23 +439,109 @@ internal static class Program
 
     private static void ExtractSafely(string archive, string destination)
     {
-        var root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var maxEntryLength = 0;
         using (var zip = ZipFile.OpenRead(archive))
         {
             foreach (var entry in zip.Entries)
             {
-                var full = Path.GetFullPath(Path.Combine(destination, entry.FullName));
-                if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+                var normalized = entry.FullName.Replace('\\', '/');
+                if (IsUnsafeArchiveEntry(normalized))
                     throw new InvalidDataException("Update archive contains an unsafe path.");
+                maxEntryLength = Math.Max(maxEntryLength, normalized.Length);
             }
         }
+
+        var fullDestination = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (fullDestination.Length + 1 + maxEntryLength >= 248)
+            throw new PathTooLongException("Update staging path is too long for Windows.");
+
         ZipFile.ExtractToDirectory(archive, destination);
+    }
+
+    private static bool IsUnsafeArchiveEntry(string entryName)
+    {
+        if (string.IsNullOrEmpty(entryName) || entryName.IndexOf('\0') >= 0 || entryName.StartsWith("/", StringComparison.Ordinal) || entryName.IndexOf(':') >= 0)
+            return true;
+
+        var segments = entryName.Split('/');
+        foreach (var segment in segments)
+            if (segment == "..") return true;
+        return false;
+    }
+
+    private static string CreateShortStagingDirectory(string archive)
+    {
+        var maxEntryLength = 0;
+        using (var zip = ZipFile.OpenRead(archive))
+        {
+            foreach (var entry in zip.Entries)
+            {
+                var normalized = entry.FullName.Replace('\\', '/');
+                if (IsUnsafeArchiveEntry(normalized))
+                    throw new InvalidDataException("Update archive contains an unsafe path.");
+                maxEntryLength = Math.Max(maxEntryLength, normalized.Length);
+            }
+        }
+        return CreateShortScratchDirectory(maxEntryLength);
+    }
+
+    private static string CreateShortScratchDirectory(int maxEntryLength)
+    {
+        var roots = new List<string>();
+        AddScratchRoots(roots, Path.GetDirectoryName(Root));
+        AddScratchRoots(roots, Path.GetTempPath());
+        AddScratchRoots(roots, Root);
+
+        foreach (var root in roots)
+        {
+            for (var attempt = 0; attempt < 32; attempt++)
+            {
+                var name = "p" + Guid.NewGuid().ToString("N").Substring(0, 6);
+                var path = Path.Combine(root, name);
+                if (path.Length + 1 + maxEntryLength >= 248 || Directory.Exists(path) || File.Exists(path)) continue;
+                try
+                {
+                    Directory.CreateDirectory(path);
+                    return path;
+                }
+                catch (UnauthorizedAccessException) { break; }
+                catch (IOException) { }
+            }
+        }
+
+        throw new IOException("Could not create a short writable staging directory for the update.");
+    }
+
+    private static void AddScratchRoots(List<string> roots, string path)
+    {
+        if (string.IsNullOrEmpty(path)) return;
+        var current = new DirectoryInfo(path);
+        while (current != null)
+        {
+            var candidate = current.FullName;
+            var found = false;
+            foreach (var existing in roots)
+                if (string.Equals(existing, candidate, StringComparison.OrdinalIgnoreCase)) { found = true; break; }
+            if (!found) roots.Add(candidate);
+            current = current.Parent;
+        }
+    }
+
+    private static string CreateShortBackupDirectory(string target)
+    {
+        for (var attempt = 0; attempt < 32; attempt++)
+        {
+            var path = Path.Combine(target, "b" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            if (Directory.Exists(path) || File.Exists(path)) continue;
+            Directory.CreateDirectory(path);
+            return path;
+        }
+        throw new IOException("Could not create a unique update backup directory.");
     }
 
     private static void ReplacePackage(string staging, string target)
     {
-        var backup = Path.Combine(target, ".update-backup-" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(backup);
+        var backup = CreateShortBackupDirectory(target);
         try
         {
             foreach (var name in ManagedEntries)
