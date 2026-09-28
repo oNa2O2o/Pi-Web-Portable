@@ -114,6 +114,7 @@ type ExtensionCommandContextActionsLike = {
 
 type AgentSessionWrapperOptions = {
   exactSystemPrompt?: () => string;
+  modelConfigGeneration?: number;
   chatOnly?: boolean;
   onAgentRunComplete?: AgentRunCompleteListener;
   suppressCompletionNotifications?: boolean;
@@ -250,12 +251,14 @@ export class AgentSessionWrapper {
   private sessionShutdownEmitted = false;
   private forceShutdownOnIdle = false;
   private _alive = true;
+  private readonly modelConfigGeneration: number;
 
   constructor(
     public readonly inner: AgentSessionLike,
     options: AgentSessionWrapperOptions = {},
   ) {
     this.exactSystemPrompt = options.exactSystemPrompt;
+    this.modelConfigGeneration = options.modelConfigGeneration ?? getRpcModelConfigGeneration();
     this.chatOnly = options.chatOnly ?? false;
     this.onAgentRunComplete = options.onAgentRunComplete;
     this.suppressCompletionNotifications = options.suppressCompletionNotifications ?? false;
@@ -283,6 +286,10 @@ export class AgentSessionWrapper {
 
   isAlive(): boolean {
     return this._alive;
+  }
+
+  isModelConfigCurrent(): boolean {
+    return this.modelConfigGeneration === getRpcModelConfigGeneration();
   }
 
   isRunning(): boolean {
@@ -704,11 +711,11 @@ export class AgentSessionWrapper {
 
       case "set_model": {
         const { provider, modelId } = command as { provider: string; modelId: string };
-        let model = this.inner.modelRuntime.getModel(provider, modelId);
-        if (!model) {
-          await this.inner.modelRuntime.refresh({ allowNetwork: false });
-          model = this.inner.modelRuntime.getModel(provider, modelId);
-        }
+        // models.json can change without changing the provider/model id. Always
+        // refresh before resolving so baseUrl, headers, api compatibility, and
+        // other runtime fields come from the latest saved configuration.
+        await this.inner.modelRuntime.refresh({ allowNetwork: false });
+        const model = this.inner.modelRuntime.getModel(provider, modelId);
         if (!model) throw new Error(`Model not found: ${provider}/${modelId}`);
         await this.inner.setModel(model);
         invalidateModelsCache();
@@ -1655,6 +1662,21 @@ declare global {
   var __piSessions: Map<string, AgentSessionWrapper> | undefined;
   var __piStartLocks: Map<string, Promise<{ session: AgentSessionWrapper; realSessionId: string }>> | undefined;
   var __piStartingSessionCwds: Map<string, number> | undefined;
+  var __piModelConfigGeneration: number | undefined;
+}
+
+function getRpcModelConfigGeneration(): number {
+  if (globalThis.__piModelConfigGeneration === undefined) globalThis.__piModelConfigGeneration = 0;
+  return globalThis.__piModelConfigGeneration;
+}
+
+function usesCurrentModelConfig(session: AgentSessionWrapper): boolean {
+  // A wrapper created by an older hot-reloaded module has no generation
+  // method. Treat it as stale instead of keeping an unknown ModelRuntime.
+  const check = (session as AgentSessionWrapper & {
+    isModelConfigCurrent?: () => boolean;
+  }).isModelConfigCurrent;
+  return typeof check === "function" && check.call(session);
 }
 
 function getRegistry(): Map<string, AgentSessionWrapper> {
@@ -1678,14 +1700,18 @@ function registerRpcWrapper(wrapper: AgentSessionWrapper): void {
   const registry = getRegistry();
   const sessionId = wrapper.sessionId;
   if (wrapper.sessionFile) cacheSessionPath(sessionId, wrapper.sessionFile);
-  wrapper.onDestroy(() => registry.delete(sessionId));
+  // An asynchronously disposed stale wrapper must not delete a newer wrapper
+  // that has already been registered under the same session id.
+  wrapper.onDestroy(() => {
+    if (registry.get(sessionId) === wrapper) registry.delete(sessionId);
+  });
   registry.set(sessionId, wrapper);
   wrapper.start();
   if (!wrapper.isChatOnly()) wrapper.beginExtensionBinding();
 }
 
 const SUBAGENT_CONTROLLER = createSubagentController({
-  getSession: (sessionId) => getRegistry().get(sessionId),
+  getSession: (sessionId) => getRpcSession(sessionId),
   registerSession: (inner, options) => {
     const wrapper = new AgentSessionWrapper(inner, {
       ...(options?.exactSystemPrompt !== undefined
@@ -1746,7 +1772,40 @@ function trackStartingSession(cwd: string): () => void {
 }
 
 export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {
-  return getRegistry().get(sessionId);
+  const session = getRegistry().get(sessionId);
+  if (!session?.isAlive()) return undefined;
+  if (!usesCurrentModelConfig(session) && !session.isRunning()) {
+    session.destroy();
+    return undefined;
+  }
+  return session;
+}
+
+/**
+ * Invalidate every in-memory ModelRuntime after models.json or provider auth
+ * changes. Idle wrappers are removed immediately. Running wrappers finish on
+ * their existing runtime and are evicted by the next lookup once idle.
+ */
+export function invalidateRpcSessionModelConfig(): {
+  generation: number;
+  evicted: number;
+  deferred: number;
+} {
+  const generation = getRpcModelConfigGeneration() + 1;
+  globalThis.__piModelConfigGeneration = generation;
+
+  let evicted = 0;
+  let deferred = 0;
+  for (const session of new Set(getRegistry().values())) {
+    if (!session.isAlive()) continue;
+    if (session.isRunning()) {
+      deferred += 1;
+      continue;
+    }
+    session.destroy();
+    evicted += 1;
+  }
+  return { generation, evicted, deferred };
 }
 
 export interface SetRpcSessionToolsResult {
@@ -1957,14 +2016,18 @@ export async function startRpcSession(
   const requestedToolNames = options.toolNames === undefined
     ? undefined
     : validateSessionToolSelection(options.toolNames);
-  const registry = getRegistry();
   const locks = getLocks();
 
-  const existing = registry.get(sessionId);
+  const existing = getRpcSession(sessionId);
   if (existing?.isAlive()) return { session: existing, realSessionId: sessionId };
 
   const inflight = locks.get(sessionId);
   if (inflight) return inflight;
+
+  // Capture before the async construction below. If models.json or provider
+  // auth changes while services are loading, this wrapper must not adopt the
+  // newer generation while retaining a runtime built from the old config.
+  const modelConfigGeneration = getRpcModelConfigGeneration();
 
   let sessionManager: SessionManager;
   if (sessionFile) {
@@ -2141,6 +2204,7 @@ export async function startRpcSession(
     exactSystemPromptRef.current = exactSystemPrompt;
     const wrapper = new AgentSessionWrapper(inner, {
       exactSystemPrompt,
+      modelConfigGeneration,
       chatOnly,
       onAgentRunComplete: (completedSessionId) => {
         void notifySessionComplete(completedSessionId).catch((error) => {
@@ -2149,6 +2213,10 @@ export async function startRpcSession(
       },
       suppressCompletionNotifications: Boolean(subagentResources),
     });
+    if (!wrapper.isModelConfigCurrent()) {
+      wrapper.destroy();
+      throw new Error("Model configuration changed during session startup. Please retry.");
+    }
     const realSessionId = inner.sessionId as string;
     registerRpcWrapper(wrapper);
 

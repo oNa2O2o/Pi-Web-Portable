@@ -873,7 +873,7 @@ function ModelDetail({
       testState.status !== undefined ? `HTTP ${testState.status}` : null,
     ].filter(Boolean);
     if (testState.phase === "success") {
-       return [t("i18n.connected"), ...meta, testState.responseText || null].filter(Boolean).join(" · ");
+       return [t("i18n.quickConnected"), ...meta, testState.responseText || null].filter(Boolean).join(" · ");
     }
      return [t("i18n.failed"), ...meta, testState.message].filter(Boolean).join(" · ");
   })();

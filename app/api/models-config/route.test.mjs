@@ -52,3 +52,12 @@ test("a commented models.json loads with its providers", async () => {
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { providers: { acme: { models: [{ id: "a" }] } } });
 });
+
+test("a successful save invalidates live model runtimes after the file write", async () => {
+  const source = await readFile(new URL("./route.ts", import.meta.url), "utf8");
+  const writeIndex = source.indexOf("writeModelsConfig(body)");
+  const invalidateIndex = source.indexOf("invalidateRpcSessionModelConfig()");
+
+  assert.ok(writeIndex >= 0);
+  assert.ok(invalidateIndex > writeIndex);
+});

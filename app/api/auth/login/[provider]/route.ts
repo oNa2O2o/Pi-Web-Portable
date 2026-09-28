@@ -1,6 +1,7 @@
 import type { AuthEvent, AuthPrompt } from "@earendil-works/pi-ai";
 import { randomUUID } from "node:crypto";
 import { invalidateModelsCache } from "@/lib/models-cache";
+import { invalidateRpcSessionModelConfig } from "@/lib/rpc-manager";
 import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
 
 export const dynamic = "force-dynamic";
@@ -167,6 +168,7 @@ export async function GET(
         });
 
         invalidateModelsCache();
+        invalidateRpcSessionModelConfig();
         send(controller, { type: "success" });
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

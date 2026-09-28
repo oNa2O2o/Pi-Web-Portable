@@ -1,5 +1,6 @@
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType } from "@/lib/provider-credential-store";
+import { invalidateRpcSessionModelConfig } from "@/lib/rpc-manager";
 import { createModelRuntimeWithExtensions } from "@/lib/model-runtime";
 
 export const dynamic = "force-dynamic";
@@ -18,5 +19,6 @@ export async function POST(
     return Response.json({ error: `${provider} is authenticated with an API key, not OAuth` }, { status: 409 });
   }
   invalidateModelsCache();
+  invalidateRpcSessionModelConfig();
   return Response.json({ ok: true });
 }

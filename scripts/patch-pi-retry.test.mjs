@@ -29,6 +29,10 @@ test("retries transient gateway errors", async () => {
   for (const classify of await loadClassifiers()) {
     assert.equal(classify({ stopReason: "error", errorMessage: "OpenAI API error (403): 403 status code (no body)" }), true);
     assert.equal(classify({ stopReason: "error", errorMessage: "Upstream access forbidden, please contact administrator" }), true);
+    assert.equal(classify({
+      stopReason: "error",
+      errorMessage: "OpenAI API error (504): Gateway Time-out 504 - 源站服务器连接超时",
+    }), true);
     assert.equal(classify({ stopReason: "error", errorMessage: "Error 524: A timeout occurred" }), true);
   }
 });
