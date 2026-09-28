@@ -18,6 +18,9 @@
 /.next/
 /out/
 /.build-home/
+/portable/.build-stage/
+/portable/dist/
+/portable/launcher/*.test.exe
 
 # production
 /build

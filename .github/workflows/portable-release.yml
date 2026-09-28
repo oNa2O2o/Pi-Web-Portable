@@ -1,0 +1,84 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      portable_version:
+        description: Portable version in x.y.z format
+        required: true
+        default: 1.0.0
+  push:
+    tags:
+      - "portable-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: portable-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: npm
+
+      - name: Resolve portable version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.portable_version }}
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq "tag") {
+            if (-not $env:GITHUB_REF_NAME.StartsWith("portable-v")) { throw "Unexpected tag: $env:GITHUB_REF_NAME" }
+            $version = $env:GITHUB_REF_NAME.Substring(10)
+          } else {
+            $version = $env:INPUT_VERSION
+          }
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "Portable version must use x.y.z format: $version" }
+          "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install build dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build portable package
+        shell: pwsh
+        run: |
+          $runtimeDir = Split-Path (Get-Command node.exe).Source
+          $outputDir = Join-Path $env:RUNNER_TEMP "Pi-web-portable"
+          $archiveDir = Join-Path $env:GITHUB_WORKSPACE "portable\dist"
+          & .\scripts\build-portable.ps1 `
+            -OutputDir $outputDir `
+            -ArchiveDir $archiveDir `
+            -RuntimeDir $runtimeDir `
+            -Repository $env:GITHUB_REPOSITORY `
+            -PortableVersion "${{ steps.version.outputs.version }}"
+
+      - name: Smoke test portable launcher
+        shell: pwsh
+        run: |
+          & .\scripts\test-portable.ps1 -PackageDir (Join-Path $env:RUNNER_TEMP "Pi-web-portable")
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-web-portable-win-x64-${{ steps.version.outputs.version }}
+          path: |
+            portable/dist/pi-web-portable-win-x64.zip
+            portable/dist/pi-web-portable-win-x64.zip.sha256
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。解压后双击 Pi-Web-Portable.exe；启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
