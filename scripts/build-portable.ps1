@@ -40,6 +40,7 @@ $assetName = "pi-web-portable-win-x64.zip"
 function Invoke-Robocopy([string]$from, [string]$to, [string[]]$extra) {
   & robocopy.exe $from $to /E /NFL /NDL /NJH /NJS /NP @extra | Out-Null
   if ($LASTEXITCODE -gt 7) { throw "robocopy failed: $from -> $to (exit $LASTEXITCODE)" }
+  $global:LASTEXITCODE = 0
 }
 
 function Remove-ExactDirectory([string]$path) {
@@ -160,6 +161,7 @@ if (Test-Path -LiteralPath $iconPath) { $compilerArgs += "/win32icon:$iconPath" 
 $compilerArgs += $launcherSource
 & $csc @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw "Portable launcher compilation failed: $LASTEXITCODE" }
+$global:LASTEXITCODE = 0
 
 if (Test-Path -LiteralPath $OutputDir) {
   $existing = Get-ChildItem -LiteralPath $OutputDir -Force -ErrorAction SilentlyContinue
@@ -192,3 +194,4 @@ Set-Content -LiteralPath ($zipPath + ".sha256") -Value ("$hash  $assetName") -En
   Zip = $zipPath
   Sha256 = $hash
 } | Format-List
+$global:LASTEXITCODE = 0
