@@ -4,6 +4,8 @@
 
 Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.
 
+**[Try the interactive demo →](https://agegr.github.io/pi-web/)** The real Pi Web UI runs entirely in your browser, with sample sessions, files and models. There is nothing to install; replies are pre-written and no model is called.
+
 ![Pi Web displaying a pi session with structured Markdown, tool calls, and project navigation](https://raw.githubusercontent.com/agegr/pi-web/main/docs/screenshot2.png)
 
 ## Features
@@ -50,6 +52,7 @@ For port and hostname, command-line options override the corresponding environme
 | `PI_WEB_ALLOWED_HOSTS` | Additional exact proxy or custom hostnames, comma-separated | Unset |
 | `PI_WEB_PASSWORD` | Enable browser password login; API clients may use Basic Auth with username `pi` | Authentication disabled |
 | `PI_WEB_IDLE_TIMEOUT_MS` | Session idle timeout in milliseconds, up to `2147483647`; `0` disables idle shutdown; invalid or out-of-range values use the default | `600000` (10 min) |
+| `PI_WEB_SHUTDOWN_DEADLINE_MS` | How long extensions get to handle `session_shutdown` before a closing session is disposed anyway, in milliseconds up to `2147483647`; `0`, invalid or out-of-range values use the default | `5000` (5 s) |
 
 For example:
 
@@ -118,9 +121,12 @@ window.addEventListener("pi-web:session-row-contextmenu", (event) => {
 
 The detail object contains `id`, `path`, `cwd`, optional `name`, pointer
 coordinates, and a `refresh()` callback for actions that change the session
-list. If no listener cancels the extension event, Pi Web preserves the
-browser's native context menu. This hook is browser-side and independent of
-Pi agent extensions.
+list. If no listener cancels the extension event, Pi Web opens its built-in
+session menu (pin, rename, fork, mark read or unread, archive, delete) at the
+pointer instead of the browser's native context menu. The row's `⋯` button
+always opens the built-in menu and does not dispatch the event. Sessions not
+yet saved to disk get no built-in menu, so the native one still appears for
+them. This hook is browser-side and independent of Pi agent extensions.
 
 ### Extension Session Liveness
 
@@ -175,6 +181,7 @@ lib/             Session, agent, model, file, Git, and security logic
 public/          Static assets and PWA files
 bin/             npm CLI entrypoint and launch option parsing
 docs/            Focused user and contributor guides
+demo/            Static browser demo published to GitHub Pages (see demo/README.md)
 ```
 
 See [AGENTS.md](./AGENTS.md) for the architecture notes and detailed file map.

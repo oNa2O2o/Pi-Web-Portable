@@ -13,7 +13,7 @@ import { sessionPathKey } from "./session-path";
 import { MAX_TOOL_RESULT_IMAGE_BYTES, TOOL_RESULT_IMAGE_MIMES } from "./tool-result-images";
 import { resolveProject, type ProjectInfo } from "./worktree";
 import { readSubagentRun, SUBAGENT_META_TYPE } from "./subagents";
-import { listSessionsIncremental, type ScannedSessionInfo } from "./session-list-scanner";
+import { listSessionsIncremental, scanSessionFileInfo, type ScannedSessionInfo } from "./session-list-scanner";
 
 export { getAgentDir };
 
@@ -116,7 +116,7 @@ function readEntryId(line: string): string | undefined {
 /**
  * Newest entry id recorded on disk, read from a bounded tail so large sessions
  * stay cheap. Undefined when the file is absent (a wrapper that has not flushed
- * its first assistant turn yet) or unreadable.
+ * its first message yet) or unreadable.
  *
  * Used only on ?force=1 session reads (mount / page refresh). An id the
  * in-memory wrapper never saw means another pi process appended to the file.
@@ -238,6 +238,17 @@ async function buildSessionList(scanned: ScannedSessionInfo[]): Promise<SessionI
   const pathToId = new Map<string, string>();
   for (const session of scanned) pathToId.set(sessionPathKey(session.path), session.id);
   return attachSessionProjectInfo(scanned.map((session) => mapScannedSession(session, pathToId)));
+}
+
+/**
+ * One session's catalogue row, read the way listAllSessions() reads it
+ * (project info, `modified` as the last message time), so the row a caller
+ * shows at once is not moved by the next list refresh. Only the file itself
+ * is scanned: a fork's `originSessionId` is the caller's to add.
+ */
+export async function readSessionInfo(filePath: string): Promise<SessionInfo | null> {
+  const scanned = await scanSessionFileInfo(filePath);
+  return scanned ? (await buildSessionList([scanned]))[0] ?? null : null;
 }
 
 async function loadAllSessions(): Promise<SessionInfo[]> {

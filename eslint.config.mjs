@@ -3,7 +3,8 @@ import typescript from "eslint-config-next/typescript";
 
 const eslintConfig = [
   {
-    ignores: ["portable/.build-stage/**", "portable/dist/**"],
+    // demo/ is a separate Next.js project with its own lint config.
+    ignores: ["demo/**", "portable/.build-stage/**", "portable/dist/**"],
   },
   ...coreWebVitals,
   ...typescript,

@@ -14,6 +14,11 @@ $url = "http://127.0.0.1:30141/"
 
 if (-not (Test-Path -LiteralPath $launcherPath)) { throw "Portable launcher not found: $launcherPath" }
 
+$existingListener = Get-NetTCPConnection -LocalPort 30141 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($null -ne $existingListener) {
+  throw "Port 30141 is already in use by PID $($existingListener.OwningProcess). Refusing to run a smoke test that could stop an active Pi Web service."
+}
+
 $launcher = $null
 $statusCode = $null
 try {
@@ -46,8 +51,10 @@ try {
   Write-Host "Portable smoke test passed: HTTP $statusCode, Node PID $nodePid"
 }
 finally {
-  $stop = Start-Process -FilePath $launcherPath -ArgumentList @("--stop") -WindowStyle Hidden -Wait -PassThru
-  if ($stop.ExitCode -ne 0) { Write-Warning "Portable stop command exited with code $($stop.ExitCode)." }
+  if ($null -ne $launcher) {
+    $stop = Start-Process -FilePath $launcherPath -ArgumentList @("--stop") -WindowStyle Hidden -Wait -PassThru
+    if ($stop.ExitCode -ne 0) { Write-Warning "Portable stop command exited with code $($stop.ExitCode)." }
+  }
 
   if ($null -ne $launcher -and -not $launcher.WaitForExit(10000)) {
     Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue
