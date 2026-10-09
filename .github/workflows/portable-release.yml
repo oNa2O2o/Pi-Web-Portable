@@ -6,7 +6,7 @@ on:
       portable_version:
         description: Portable version in x.y.z format
         required: true
-        default: 1.0.0
+        default: 1.2.0
   push:
     tags:
       - "portable-v*"
@@ -66,6 +66,12 @@ jobs:
         run: |
           & .\scripts\test-portable.ps1 -PackageDir (Join-Path $env:RUNNER_TEMP "Pi-web-portable")
 
+      - name: Verify session naming with isolated provider
+        shell: pwsh
+        run: |
+          node scripts/test-session-titles.mjs (Join-Path $env:RUNNER_TEMP "Pi-web-portable")
+          if ($LASTEXITCODE -ne 0) { throw "Session naming HTTP verification failed" }
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -81,4 +87,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。解压后双击 Pi-Web-Portable.exe；启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
+          gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --clobber
+          } else {
+            gh release create "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。解压后双击 Pi-Web-Portable.exe；启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }

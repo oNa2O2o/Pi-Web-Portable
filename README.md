@@ -1,5 +1,15 @@
 # Pi Web
 
+This fork distributes the Windows portable edition at
+[oNa2O2o/Pi-Web-Portable](https://github.com/oNa2O2o/Pi-Web-Portable).
+Download the ZIP from [portable releases](https://github.com/oNa2O2o/Pi-Web-Portable/releases)
+and run `Pi-Web-Portable.exe`. The launcher verifies SHA256 before updating.
+Existing packages using `oNa2O2o/pi-web` follow GitHub's repository redirect.
+Portable 1.2.0 adds automatic titles from the first user demand, with required
+destination codes such as KR/EN/JP and a 12-character limit. In Settings → General,
+choose the separate naming model from your enabled models; automatic selection
+prefers Gemini, GPT, then Claude. Manual names take priority.
+
 [中文文档](./README.zh-CN.md) | [日本語](./README.ja.md) | [Русский](./README.ru.md)
 
 Local browser UI for the [pi coding agent](https://github.com/earendil-works/pi). Pi Web uses the same local configuration and session files as pi, so you can browse and resume conversations, run agent turns, configure models and resources, and inspect project files from a browser.

@@ -1,5 +1,12 @@
 # Models and provider auth
 
+## Portable naming model
+`GET/PUT /api/session-title/settings` reads/writes only global `piWebTitle: { enabled, model }`.
+The model picker uses `/api/models?cwd=...` and the PUT validates that reference against the same
+enabled scope. It never writes `defaultProvider`, `defaultModel` or changes a running task model.
+An unavailable configured naming model leads to a local fallback, rather than silently selecting
+another paid model. The automatic setting affects new first-demand triggers, not manual regeneration.
+
 ## Model defaults for new sessions
 `GET /api/models` returns `defaultModel` from `~/.pi/agent/settings.json`; `ChatWindow` pre-selects it for new sessions. Browser model/thinking picks are applied atomically while the AgentSession is built and are **session-scoped**: neither startup nor a mid-session `set_model` / `set_thinking_level` writes `settings.json`, as pi's `/model` and `/thinking` persist only on Ctrl+S (otherwise a one-off pick becomes the TUI's default too).
 

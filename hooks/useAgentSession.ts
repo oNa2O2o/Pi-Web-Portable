@@ -1760,6 +1760,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(sid, {
           type: "prompt",
           message,
+          titleLanguage: document.documentElement.lang,
           ...(piImages?.length ? { images: piImages } : {}),
         });
         promoteNewSession(1, message);
@@ -1770,6 +1771,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         await sendAgentCommand(session.id, {
           type: "prompt",
           message,
+          titleLanguage: document.documentElement.lang,
           ...(piImages?.length ? { images: piImages } : {}),
         });
       } else {

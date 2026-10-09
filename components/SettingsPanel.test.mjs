@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const panelSource = await readFile(new URL("./SettingsPanel.tsx", import.meta.url), "utf8");
-const cssSource = await readFile(new URL("../app/settings.css", import.meta.url), "utf8");
+const panelSource = (await readFile(new URL("./SettingsPanel.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+const cssSource = (await readFile(new URL("../app/settings.css", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const globalCssSource = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
-const shellSource = await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8");
+const shellSource = (await readFile(new URL("./AppShell.tsx", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 // The sub-agents panel draws child sessions with the same robot glyph.
 const agentSessionPanelSource = await readFile(new URL("./AgentSessionPanel.tsx", import.meta.url), "utf8");
 const themeSource = await readFile(new URL("../hooks/useTheme.ts", import.meta.url), "utf8");
@@ -13,7 +13,7 @@ const themeOptionsSource = await readFile(new URL("../lib/theme.ts", import.meta
 const enSource = await readFile(new URL("../lib/i18n/messages/en.ts", import.meta.url), "utf8");
 const zhSource = await readFile(new URL("../lib/i18n/messages/zh-CN.ts", import.meta.url), "utf8");
 const loginSource = await readFile(new URL("../app/login/page.tsx", import.meta.url), "utf8");
-const stackedDialogSource = await readFile(new URL("../lib/stacked-dialog.ts", import.meta.url), "utf8");
+const stackedDialogSource = (await readFile(new URL("../lib/stacked-dialog.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 
 test("opens one settings panel from direct sidebar shortcuts", () => {
   assert.match(shellSource, /<SettingsPanel/);
@@ -117,7 +117,7 @@ test("trusting from Settings › MCP reloads, in place, the other mounted sectio
   for (const name of ["SkillsConfig", "AgentsConfig", "PluginsConfig"]) {
     assert.match(panelSource, new RegExp(`<${name} embedded key=\\{cwd\\} cwd=\\{cwd\\}[^\\n]*? trust=\\{projectTrust\\} `), name);
   }
-  const read = (name) => readFile(new URL(`./${name}.tsx`, import.meta.url), "utf8");
+  const read = async (name) => (await readFile(new URL(`./${name}.tsx`, import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const [skills, plugins, agents] = await Promise.all(["SkillsConfig", "PluginsConfig", "AgentsConfig"].map(read));
   // Skills and Plugins report "not loaded" and disable the Project scope from the trust at load
   // time: a new decision loads the list again, keeping the selection and update checks; the

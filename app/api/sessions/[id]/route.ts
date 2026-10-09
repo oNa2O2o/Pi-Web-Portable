@@ -26,6 +26,7 @@ import { readSubagentRun, readSubagentSessionResources, SUBAGENT_META_TYPE } fro
 import { readSessionToolSelection } from "@/lib/session-tool-selection";
 import { jsonResponse } from "@/lib/json-response";
 import { forgetSessionUiState } from "@/lib/session-ui-state";
+import { markTitleManual } from "@/lib/session-title-state";
 
 export async function GET(
   req: Request,
@@ -187,8 +188,11 @@ export async function PATCH(
     }
 
     // PATCH writes via appendSessionInfo — open fresh, bypassing the cache.
-    const sm = openSessionManager(filePath, { mutable: true });
-    sm.appendSessionInfo(name.trim());
+    const rpc = getRpcSession(id);
+    await markTitleManual(id, () => {
+      if (rpc?.isAlive()) rpc.inner.setSessionName(name.trim());
+      else openSessionManager(filePath, { mutable: true }).appendSessionInfo(name.trim());
+    });
     invalidateSessionManagerCache(filePath);
     invalidateSessionListCache();
     return NextResponse.json({ ok: true });

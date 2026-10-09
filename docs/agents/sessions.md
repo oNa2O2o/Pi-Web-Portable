@@ -1,5 +1,33 @@
 # Sessions, branching and live events
 
+## Portable session naming
+The portable build names the first substantive accepted user demand once. `AgentSessionWrapper`
+captures raw text/images before SDK expansion, then schedules `runSessionTitleJob()` after the
+user `message_end` is persisted. Both new-chat entry points share this path. Settings commands,
+empty input and skill-only input without attachments do not trigger; existing conversations,
+forks and subagents are not renamed automatically.
+
+`session-title-analysis.ts` classifies original input and actual loaded skills through a standalone
+tool-free model request. Naming uses the separately configured available model, or Gemini → GPT →
+Claude by default; task models and skill execution are untouched. Destination codes inferred from
+explicit input/material paths or a referenced localisation skill must survive the 12-grapheme
+title limit. Image-only character tasks pass original image bytes to a vision-capable naming model.
+Only a JSON result matching the session id, input language, regions and available skill/model names
+is accepted. Invalid output/errors/timeouts use a bounded local fallback.
+
+`node scripts/test-session-titles.mjs <package-directory>` verifies the packaged routes with the
+real SDK and a local mock provider on port 30142. It uses temporary settings/history and checks
+both admission paths, original images, enabled-model settings, explicit regeneration, once-only
+requests, manual rename races and malformed-output fallback. `--keep-open` keeps this isolated
+server available for browser QA until Enter.
+
+Per-session attempt/revision/raw-input/analysis lives in `<agentDir>/pi-web-titles/<id>.json`,
+separate from conversation JSONL so it does not advance the branch leaf or get copied by forks.
+Atomic locked updates claim once across reloads/duplicate submissions; manual rename increments the
+revision and aborts pending classification. Final writes check the job and current name, so late
+model results never override a manual name. The explicit Regenerate button uses the same analysis
+and is allowed to replace an existing name. Name writes invalidate the existing sidebar list cache.
+
 ## AgentSession lifecycle (`lib/rpc-manager.ts`)
 - One `AgentSessionWrapper` per session id in `globalThis.__piSessions` (`globalThis` survives Next.js hot reload; a module-level Map does not). Concurrent `startRpcSession()` calls share one start Promise (`globalThis.__piStartLocks`). Idle timeout: 10 minutes (`PI_WEB_IDLE_TIMEOUT_MS`, `0` disables).
 - Stop cannot cancel a run awaiting a promise that ignores the abort signal (a third-party extension handler or tool): `inner.abort()` never returns. So Stop (`abort`, `abort_bash`) sets `forceShutdownOnIdle` and arms the idle timer, shutting the wrapper down one idle timeout after the first Stop even while it runs. Later commands (a reload's `get_tools`, Stop again) must not push that deadline back; with `PI_WEB_IDLE_TIMEOUT_MS=0` it still arms, at 10 minutes.

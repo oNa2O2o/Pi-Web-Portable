@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
-  [string]$Repository = "oNa2O2o/pi-web",
-  [string]$PortableVersion = "1.0.0",
+  [string]$Repository = "oNa2O2o/Pi-Web-Portable",
+  [string]$PortableVersion = "1.2.0",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -46,7 +46,10 @@ function Invoke-Robocopy([string]$from, [string]$to, [string[]]$extra) {
 function Remove-ExactDirectory([string]$path) {
   if (Test-Path -LiteralPath $path) {
     $resolved = (Resolve-Path -LiteralPath $path).Path
-    if ($resolved -eq (Resolve-Path -LiteralPath $sourceDir).Path) { throw "Refusing to remove source directory" }
+    $allowedStage = [IO.Path]::GetFullPath((Join-Path $sourceDir "portable\.build-stage"))
+    $allowedLogs = [IO.Path]::GetFullPath((Join-Path $OutputDir "logs"))
+    $allowedStageBuild = [IO.Path]::GetFullPath((Join-Path $stageApp ".next"))
+    if ($resolved -ine $allowedStage -and $resolved -ine $allowedLogs -and $resolved -ine $allowedStageBuild) { throw "Refusing to remove unexpected directory: $resolved" }
     Remove-Item -LiteralPath $resolved -Recurse -Force
   }
 }
@@ -108,6 +111,18 @@ if (-not $ReuseStage) {
 elseif (-not (Test-Path -LiteralPath (Join-Path $stageApp "node_modules"))) {
   throw "Cannot reuse stage because production dependencies are missing: $stageApp"
 }
+else {
+  # Reuse dependency installation, but always package the current build.
+  Remove-ExactDirectory (Join-Path $stageApp ".next")
+  foreach ($name in @("package.json", "package-lock.json", "next.config.ts")) {
+    Copy-Item -LiteralPath (Join-Path $sourceDir $name) -Destination (Join-Path $stageApp $name) -Force
+  }
+  foreach ($name in @("bin", "scripts", "public")) {
+    Invoke-Robocopy (Join-Path $sourceDir $name) (Join-Path $stageApp $name) @()
+  }
+  $nextDir = Join-Path $sourceDir ".next"
+  Invoke-Robocopy $nextDir (Join-Path $stageApp ".next") @("/XD", (Join-Path $nextDir "cache"), (Join-Path $nextDir "dev"))
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "runtime") | Out-Null
 Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $stageDir "runtime\node.exe") -Force
@@ -132,6 +147,8 @@ Pi Web Windows 便携版
 双击 Pi-Web-Portable.exe 即可启动本地服务并打开浏览器。
 用户设置、API Key 和会话仍保存在 Windows 的 Pi 用户目录，不会打包进便携版。
 启动器会从 GitHub Releases 检查更新，并在 SHA256 校验通过后才安装。
+设置 > 常规 > 会话命名：从已有模型列表选择独立的命名模型。
+首条实际需求只自动命名一次，最多 12 字符，并保留 KR/EN/JP 等地区标注。
 
 命令：
   Pi-Web-Portable.exe --self-test
@@ -167,7 +184,10 @@ if (Test-Path -LiteralPath $OutputDir) {
   $existing = Get-ChildItem -LiteralPath $OutputDir -Force -ErrorAction SilentlyContinue
   if ($existing) {
     $backup = "$OutputDir.backup-$(Get-Date -Format yyyyMMdd-HHmmss)"
-    Move-Item -LiteralPath $OutputDir -Destination $backup
+    $resolvedOutput = (Resolve-Path -LiteralPath $OutputDir).Path
+    $expectedOutput = [IO.Path]::GetFullPath($OutputDir)
+    if ($resolvedOutput -ine $expectedOutput -or $resolvedOutput -ieq $sourceDir -or $resolvedOutput -ieq [IO.Path]::GetPathRoot($resolvedOutput)) { throw "Unsafe package output path" }
+    Move-Item -LiteralPath $resolvedOutput -Destination $backup
     Write-Host "Existing package moved to $backup"
   }
 }
@@ -175,7 +195,7 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Invoke-Robocopy $stageDir $OutputDir @()
 
 $outputExe = Join-Path $OutputDir $portableExeName
-$selfTestProcess = Start-Process -FilePath $outputExe -ArgumentList @("--self-test") -Wait -PassThru
+$selfTestProcess = Start-Process -FilePath $outputExe -ArgumentList @("--self-test") -WindowStyle Hidden -Wait -PassThru
 if ($selfTestProcess.ExitCode -ne 0) { throw "Portable self-test failed: $($selfTestProcess.ExitCode)" }
 Remove-ExactDirectory (Join-Path $OutputDir "logs")
 

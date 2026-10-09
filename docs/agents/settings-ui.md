@@ -1,5 +1,11 @@
 # Settings panels: plugins, skills and shared blocks
 
+The portable General panel includes `SessionTitleSettings`: an automatic-new-session switch and
+existing `ModelSelector` for the separate naming model. Labels are translated for all built-in
+locales; `ConfigField` and `ConfigSwitch` reuse shared settings controls. Settings persist on the
+server, so the selection is shared across browsers. The previous Generate-title action is now
+Regenerate, using the same original-demand classifier.
+
 ## General appearance
 - `components/FontSettings.tsx` offers separate interface/chat and monospace (code, tool output, terminal) font-name lists in the Fonts & layout section after Appearance, together with chat font size and content width; the Chat section keeps only behavior switches. Every row there has one shape: a header line (label, value, reset button in a fixed 28px column) over a full-width slider, so values and resets line up. A font row puts its name field between label and value, and its slider is the weight (100–600, step 100; `aria-valuetext` adds the weight's name). Both font rows share one grid (`subgrid`), so their name fields start at the same x whatever the labels' widths in each locale. The name field is drawn in the font it names, which is the preview; keep one short section description, no separate preview lines or per-control paragraphs. `hooks/useFontPreferences.ts` stores them only in the browser (`pi-ui-font-family`, `pi-mono-font-family`), applies changes immediately through `--font-ui` / `--font-mono`, and syncs other tabs. AppShell keeps the hook mounted so restoring a font never requires opening Settings or a chat. Empty input removes the override; the original stacks stay in `app/globals.css` as `--font-ui-default` / `--font-mono-default`.
 - Font names refer to fonts on the **browser's device**, not the server; no enumeration, upload or remote download. `lib/font-preferences.ts` treats commas as separators, accepts optional enclosing quotes, quotes non-generic names as data, and always appends the default stack. Never interpolate font input into a stylesheet or accept it as executable CSS. Keep raw input whitespace while typing so multi-word names remain editable.

@@ -1,5 +1,5 @@
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme, type ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { createAgentSessionFromServices, createAgentSessionServices, getAgentDir, initTheme, SessionManager, SettingsManager, Theme, type AgentSession, type ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
@@ -56,6 +56,9 @@ import {
   readSessionToolSelection,
   validateSessionToolSelection,
 } from "./session-tool-selection";
+import { isFirstTitleDemand, runSessionTitleJob } from "./session-title-runtime";
+import { markTitleManual } from "./session-title-state";
+import type { GeneratedSessionTitle, TitleImage } from "./session-title-analysis";
 
 // ============================================================================
 // Types
@@ -325,6 +328,7 @@ export class AgentSessionWrapper {
   // Set when shutdown() starts. The SDK session stays usable until destroy(),
   // but lookups must treat the wrapper as gone from this point on.
   private closing = false;
+  private pendingTitleDemand: { message: string; images: TitleImage[]; languageHint?: string } | null = null;
 
   constructor(
     public readonly inner: AgentSessionLike,
@@ -400,6 +404,22 @@ export class AgentSessionWrapper {
 
   start(): void {
     this.unsubscribe = this.inner.subscribe((event: AgentEvent) => {
+      if (event.type === "message_end"
+        && (event.message as { role?: string } | undefined)?.role === "user"
+        && this.pendingTitleDemand) {
+        const demand = this.pendingTitleDemand;
+        this.pendingTitleDemand = null;
+        // The SDK emits message_end just before persisting it. A microtask
+        // runs after that synchronous append, without delaying the main run.
+        queueMicrotask(() => {
+          void runSessionTitleJob(this.inner as unknown as AgentSession, {
+            automatic: true, demand, isAlive: () => this.isAlive(),
+            onNamed: (result) => this.publishSessionTitle(result),
+          }).catch((error) => {
+            console.warn("[pi-web] automatic naming failed:", error instanceof Error ? error.message : String(error));
+          });
+        });
+      }
       if (event.type === "agent_start") {
         this.agentRunNeedsCompletion = true;
         this.lastRunAborted = false;
@@ -416,6 +436,18 @@ export class AgentSessionWrapper {
       if (event.type === "agent_settled") this.notifyAgentRunCompleteIfIdle();
     });
     this.resetIdleTimer();
+  }
+
+  private publishSessionTitle(result: GeneratedSessionTitle): void {
+    invalidateSessionListCache();
+    this.emit({ type: "session_title_updated", title: result.title });
+  }
+
+  async regenerateSessionTitle(): Promise<GeneratedSessionTitle | null> {
+    return runSessionTitleJob(this.inner as unknown as AgentSession, {
+      automatic: false, isAlive: () => this.isAlive(),
+      onNamed: (result) => this.publishSessionTitle(result),
+    });
   }
 
   /**
@@ -758,6 +790,11 @@ export class AgentSessionWrapper {
           }
           const promptImages = command.images as Array<{ type: "image"; data: string; mimeType: string }> | undefined;
           const streamingBehavior = command.streamingBehavior as "steer" | "followUp" | undefined;
+          const titleDemand = isFirstTitleDemand(this.inner as unknown as AgentSession,
+            typeof command.message === "string" ? command.message : "", promptImages)
+            ? { message: command.message as string, images: promptImages ?? [],
+              languageHint: typeof command.titleLanguage === "string" && /^(?:zh(?:-CN|-TW)?|en|ja|ko)$/.test(command.titleLanguage)
+                ? command.titleLanguage : undefined } : null;
           let preflightAccepted = false;
           let preflightSettled = false;
           let promptSettled = false;
@@ -819,6 +856,7 @@ export class AgentSessionWrapper {
           }
           let prompt: Promise<void>;
           try {
+            if (titleDemand) this.pendingTitleDemand = titleDemand;
             prompt = this.inner.prompt(command.message as string, {
               ...(promptImages?.length ? { images: promptImages } : {}),
               ...(streamingBehavior ? { streamingBehavior } : {}),
@@ -830,17 +868,20 @@ export class AgentSessionWrapper {
               preflightResult: () => acceptPreflight(),
             });
           } catch (error) {
+            if (this.pendingTitleDemand === titleDemand) this.pendingTitleDemand = null;
             finishPrompt();
             throw error;
           }
 
           void prompt.then(() => {
+            if (this.pendingTitleDemand === titleDemand) this.pendingTitleDemand = null;
             // Compatibility fallback if a future SDK resolves without invoking
             // the internal callback. This waits for the run, but never acks early.
             acceptPreflight();
             finishPrompt();
             if (!streamingBehavior) this.emit(this.promptDoneEvent());
           }, (error) => {
+            if (this.pendingTitleDemand === titleDemand) this.pendingTitleDemand = null;
             rejectPreflight(error);
             finishPrompt();
             invalidateSessionListCache();
@@ -1076,7 +1117,7 @@ export class AgentSessionWrapper {
       case "set_session_name": {
         const name = (command.name as string | undefined)?.trim();
         if (!name) throw new Error("Session name cannot be empty");
-        this.inner.setSessionName(name);
+        await markTitleManual(this.sessionId, () => this.inner.setSessionName(name));
         invalidateSessionListCache();
         return null;
       }
