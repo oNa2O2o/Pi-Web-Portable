@@ -1,12 +1,17 @@
 # Windows portable release
 
+Every build must preserve [the local upgrade requirements](upgrade-requirements.md),
+including Claude continuation with OpenAI-origin tool history. `build` and
+`build:portable` run the required SDK/session regression checks before compiling.
+
 The portable version and Pi Web application version are separate. Portable
-1.3.0 bundles Pi Web 0.12.2 and Node.js 24.20.0.
+1.3.1 bundles Pi Web 0.12.2 and Node.js 24.20.0, including native Claude
+tool-history compatibility with billion-context.
 
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.3.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.3.1 -RuntimeDir C:\path\to\node
 ```
 
 The build verifies `engines.node`, builds the application, installs production
@@ -26,6 +31,7 @@ Before publishing, run:
   -ChecksumPath .\portable\dist\pi-web-portable-win-x64.zip.sha256 `
   -PreviousArchive C:\path\to\previous-release.zip
 node scripts/test-session-titles.mjs .\portable\dist\Pi-web-portable
+node scripts/verify-billion-context.mjs --app-dir .\portable\dist\Pi-web-portable\app
 ```
 
 Use free ports. The update test installs into its own short temporary directory,
@@ -38,7 +44,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.3.0 `
+  -ExpectedVersion 1.3.1 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 

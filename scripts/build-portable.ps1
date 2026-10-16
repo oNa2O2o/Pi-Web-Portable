@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.3.0",
+  [string]$PortableVersion = "1.3.1",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -94,6 +94,12 @@ if ((-not $SkipBuild -or (-not $ReuseStage -and -not $SkipInstall)) -and -not (T
 }
 if ($PortableVersion -notmatch '^\d+\.\d+\.\d+$') { throw "PortableVersion must use x.y.z format: $PortableVersion" }
 if ($Repository -notmatch '^[^/]+/[^/]+$') { throw "Repository must use owner/name format: $Repository" }
+
+if ($SkipBuild) {
+  # Reusing compiled output must not bypass the compatibility release gate.
+  & $nodeExe --test (Join-Path $sourceDir "lib\anthropic-tool-ids.test.mjs") (Join-Path $sourceDir "lib\anthropic-tool-ids.integration.test.mjs")
+  if ($LASTEXITCODE -ne 0) { throw "Native Claude compatibility checks failed: $LASTEXITCODE" }
+}
 
 if (-not $SkipBuild) {
   $tempDir = Join-Path $sourceDir ".build-home\portable-tmp"

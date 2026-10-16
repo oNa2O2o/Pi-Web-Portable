@@ -1,5 +1,14 @@
 # Models and provider auth
 
+## Native Anthropic relay tool history
+`lib/anthropic-tool-ids.ts` adapts outgoing native Anthropic requests to `api.chiyi.cc`,
+whose gateway rejects historical OpenAI `call_` IDs. It maps each foreign ID and its
+matching result together, preserves native IDs and the persisted transcript, and leaves
+other endpoints/protocols alone. `rpc-manager.ts` loads this hidden request hook in
+normal, Chat-only and subagent sessions, including reload. Keep the SDK transport and
+session integration tests in `npm run test:anthropic-tool-ids` passing on upgrades;
+see `docs/upgrade-requirements.md`.
+
 ## Portable naming model
 `GET/PUT /api/session-title/settings` reads/writes only global `piWebTitle: { enabled, model }`.
 The model picker uses `/api/models?cwd=...` and the PUT validates that reference against the same

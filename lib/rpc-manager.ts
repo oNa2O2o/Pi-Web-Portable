@@ -48,6 +48,7 @@ import { isBuiltInSubagentsEnabled } from "./subagent-settings";
 import { resolveShellTools } from "./powershell-settings";
 import { CHAT_ONLY_RESOURCE_LOADER_OPTIONS, contextFilesSystemPrompt } from "./chat-only";
 import { createExactSystemPromptExtension } from "./exact-system-prompt";
+import { createAnthropicToolIdsExtension } from "./anthropic-tool-ids";
 import { createPiWebBuiltinExtensions, createSubagentCodemodeExtension, createSubagentMcpExtensions } from "./builtin-extensions";
 import type { McpHost } from "./mcp-host";
 import { mcpPromptPreparation, type McpCommandCandidate } from "./mcp-command";
@@ -2660,6 +2661,7 @@ export async function startRpcSession(
         ? [...subagentMcp.extensions, createSubagentMcpPolicyExtension(() => subagentResources)]
         : []),
       ...(skillsBinding?.loaderOptions.extensionFactories ?? []),
+      createAnthropicToolIdsExtension(),
     ];
     const services = await createAgentSessionServices({
       cwd: sessionCwd,
@@ -2682,7 +2684,7 @@ export async function startRpcSession(
             appendSystemPrompt: subagentResources.appendSystemPrompt,
           }
         : chatOnly
-          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [exactSystemPromptExtension] }
+          ? { ...CHAT_ONLY_RESOURCE_LOADER_OPTIONS, extensionFactories: [exactSystemPromptExtension, createAnthropicToolIdsExtension()] }
         : {
             extensionFactories: [
               ...(builtins?.extensions ?? []),
@@ -2696,6 +2698,7 @@ export async function startRpcSession(
                 () => listSubagentProfiles(sessionCwd),
                 isBuiltInSubagentsEnabled,
               ),
+              createAnthropicToolIdsExtension(),
             ],
             extensionsOverride: (base) => preferUserBashExtension(preferPiWebSubagentExtension(base)),
           },

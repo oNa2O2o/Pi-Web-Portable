@@ -2,6 +2,9 @@
 
 ## Quick Start
 
+Local upgrades and portable releases must preserve [upgrade-requirements.md](docs/upgrade-requirements.md).
+Run its required regression checks before replacing a working installation.
+
 ```bash
 npm run dev   # port 30141
 ```
