@@ -33,6 +33,24 @@ preserves a user-data marker, removes an obsolete application file, runs the
 launcher rollback tests, and starts the upgraded HTTP server. The naming test
 uses an isolated configuration and local mock provider.
 
+After publication, test the real online upgrade from an older release:
+
+```powershell
+powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
+  -PreviousArchive C:\path\to\previous-release.zip `
+  -ExpectedVersion 1.3.0 `
+  -ResultPath C:\path\to\online-upgrade-result.json
+```
+
+This test uses the original released updater's discovery, download, checksum,
+and installation code. It bypasses the confirmation dialog for automation,
+runs the old and upgraded servers on a free test port, and checks that the
+installed executable matches the published archive and user data survives.
+It requires Windows PowerShell 5.1 to load the original .NET Framework
+executable. A failed run retains its isolated directory and logs for diagnosis.
+The result records the original updater hash, downloaded release hash, old
+server shutdown, installed versions, and the upgraded application's HTTP status.
+
 The launcher checks `portable-v*` GitHub releases with both the configured ZIP
 and its `.sha256` asset. It validates checksums, package completeness, and runtime
 compatibility; waits for the original launcher to exit; and backs up only the
