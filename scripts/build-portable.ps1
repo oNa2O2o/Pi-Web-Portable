@@ -241,7 +241,7 @@ New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 Invoke-Robocopy $stageDir $OutputDir @()
 
 $outputExe = Join-Path $OutputDir $portableExeName
-$selfTestProcess = Start-Process -FilePath $outputExe -ArgumentList @("--self-test") -WindowStyle Hidden -Wait -PassThru
+$selfTestProcess = Start-Process -FilePath $outputExe -ArgumentList @("--self-test", "--non-interactive") -WindowStyle Hidden -Wait -PassThru
 if ($selfTestProcess.ExitCode -ne 0) { throw "Portable self-test failed: $($selfTestProcess.ExitCode)" }
 Remove-ExactDirectory (Join-Path $OutputDir "logs")
 
