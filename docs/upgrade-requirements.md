@@ -25,6 +25,21 @@ npm run test:models
 先修复适配并通过测试，再生成发布包。不得跳过失败检查继续发布。
 `build-portable.ps1 -SkipBuild` 也必须运行该检查，不能因为复用构建产物而绕过。
 
+### Claude 系统文档索引兼容
+
+- 已验证 `api.chiyi.cc` 会在 system 中同时出现 `docs/custom-provider.md` 和
+  `pi packages (docs/packages.md)` 时返回 extra-usage 400；相同内容放在用户消息
+  或工具结果中可以成功。不能把这类错误统一解释为 Key 额度耗尽。
+- `lib/anthropic-system-docs.ts` 仅在该端点的原生 Anthropic 请求发送前，把可识别的
+  Pi SDK 内置 `<docs>` 索引替换为 README、docs、examples 路径和按需完整阅读指令。
+  保留 Pi 身份、项目规则、技能、自定义提示、扩展附加规则、缓存字段及所有会话历史。
+- 通过现有请求兼容钩子覆盖普通会话、重新打开的旧会话、reload 和子代理；
+  自定义 Chat-only 提示及其他端点不应被改写。不得改成伪装 Claude Code 客户端。
+- 构建前的 `npm run test:models` 和 `-SkipBuild` 必须包含系统文档回归；
+  `test:billion-context` 及打包后插件测试必须确认请求仍为按需文档形式。
+- 升级 SDK 若改变内置索引结构，必须重新检查适配并验证实际工具调用；
+  不得删除失败测试、清空历史、停用十亿上下文插件或恢复被拒绝的固定索引。
+
 ### 与十亿上下文插件共存
 
 - 2026-10-16 已用实际安装的 `billion-context@0.1.197` 验证：原生 fetch 拦截、

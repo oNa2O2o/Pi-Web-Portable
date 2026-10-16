@@ -6,14 +6,15 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
-1.3.2 bundles Pi Web 0.12.2 and Node.js 24.20.0, including native Claude
+1.3.3 bundles Pi Web 0.12.2 and Node.js 24.20.0, including native Claude
 tool-history compatibility with billion-context and persistent model selection
-when resending after errors or timeouts.
+when resending after errors or timeouts. It also replaces the affected Claude
+endpoint's rejected system documentation index with on-demand references.
 
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.3.2 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.3.3 -RuntimeDir C:\path\to\node
 ```
 
 The build verifies `engines.node`, builds the application, installs production
@@ -47,7 +48,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.3.2 `
+  -ExpectedVersion 1.3.3 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 

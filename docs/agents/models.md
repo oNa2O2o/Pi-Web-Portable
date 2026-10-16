@@ -9,6 +9,16 @@ normal, Chat-only and subagent sessions, including reload. Keep the SDK transpor
 session integration tests in `npm run test:anthropic-tool-ids` passing on upgrades;
 see `docs/upgrade-requirements.md`.
 
+## Native Anthropic relay system documentation
+The same request hook also runs `lib/anthropic-system-docs.ts` for `api.chiyi.cc`.
+The endpoint rejects the SDK's detailed Pi documentation index in system text.
+Only the recognized built-in `<docs>` section becomes README/docs/examples
+references with instructions to read applicable files on demand. Other system
+sections, custom documentation, cache metadata and persisted transcripts remain
+intact. Never remove user messages containing the same text. The SDK-index
+recognition and request-path checks belong to `npm run test:models`; the real
+billion-context proxy check must verify that it preserves the transformed index.
+
 ## Portable naming model
 `GET/PUT /api/session-title/settings` reads/writes only global `piWebTitle: { enabled, model }`.
 The model picker uses `/api/models?cwd=...` and the PUT validates that reference against the same

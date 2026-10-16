@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.3.2",
+  [string]$PortableVersion = "1.3.3",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -97,7 +97,7 @@ if ($Repository -notmatch '^[^/]+/[^/]+$') { throw "Repository must use owner/na
 
 if ($SkipBuild) {
   # Reusing compiled output must not bypass the compatibility release gate.
-  & $nodeExe --test (Join-Path $sourceDir "lib\anthropic-tool-ids.test.mjs") (Join-Path $sourceDir "lib\anthropic-tool-ids.integration.test.mjs") (Join-Path $sourceDir "lib\resend-model.integration.test.mjs") (Join-Path $sourceDir "hooks\resend-model.test.mjs")
+  & $nodeExe --test (Join-Path $sourceDir "lib\anthropic-system-docs.test.mjs") (Join-Path $sourceDir "lib\anthropic-tool-ids.test.mjs") (Join-Path $sourceDir "lib\anthropic-tool-ids.integration.test.mjs") (Join-Path $sourceDir "lib\resend-model.integration.test.mjs") (Join-Path $sourceDir "hooks\resend-model.test.mjs")
   if ($LASTEXITCODE -ne 0) { throw "Model compatibility and resend checks failed: $LASTEXITCODE" }
 }
 

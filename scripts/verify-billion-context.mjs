@@ -29,6 +29,12 @@ const upstream = createServer(async (req, res) => {
     const chunks = [];
     for await (const chunk of req) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString());
+    const systemText = typeof body.system === "string" ? body.system
+      : (body.system ?? []).map((block) => block.text ?? "").join("\n");
+    assert.ok(systemText.includes("Pi documentation locations:"), "reference docs must survive the plugin");
+    assert.ok(systemText.includes("- Additional docs:"));
+    assert.ok(!systemText.includes("pi packages (docs/packages.md)"),
+      "the plugin must not restore the rejected system index");
     const blocks = body.messages.flatMap((m) => Array.isArray(m.content) ? m.content : []);
     const calls = blocks.filter((b) => b.type === "tool_use");
     const results = blocks.filter((b) => b.type === "tool_result");
@@ -214,7 +220,7 @@ try {
   assert.ok((await readFile(manager.getSessionFile(), "utf8")).startsWith(originalHistory));
   console.log(JSON.stringify({
     plugin: `${plugin.name}@${plugin.version}`, passed: true, compiledApplication: Boolean(appDir), routedRequests: routed,
-    checks: ["native fetch interception", "real proxy parse/serialize", "compression tools active", "foreign IDs paired", "new read tool roundtrip", "original history preserved"],
+    checks: ["native fetch interception", "real proxy parse/serialize", "reference-only system docs", "compression tools active", "foreign IDs paired", "new read tool roundtrip", "original history preserved"],
     limitation: "Small synthetic history; no compression threshold or live provider tested.",
   }, null, 2));
 } finally {

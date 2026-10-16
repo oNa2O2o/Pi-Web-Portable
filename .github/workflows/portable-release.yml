@@ -6,7 +6,7 @@ on:
       portable_version:
         description: Portable version in x.y.z format
         required: true
-        default: 1.3.2
+        default: 1.3.3
   push:
     tags:
       - "portable-v*"
