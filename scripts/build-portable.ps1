@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.2.0",
+  [string]$PortableVersion = "1.3.0",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -142,6 +142,13 @@ elseif (-not (Test-Path -LiteralPath (Join-Path $stageApp "node_modules"))) {
 }
 else {
   # Reuse dependency installation, but always package the current build.
+  $stageLockPath = Join-Path $stageApp "package-lock.json"
+  $sourceLockHash = (Get-FileHash -LiteralPath (Join-Path $sourceDir "package-lock.json") -Algorithm SHA256).Hash
+  $stageLockHash = if (Test-Path -LiteralPath $stageLockPath) { (Get-FileHash -LiteralPath $stageLockPath -Algorithm SHA256).Hash } else { "" }
+  $dependenciesChanged = $stageLockHash -ne $sourceLockHash
+  if ($dependenciesChanged -and $SkipInstall) {
+    throw "Cannot reuse outdated production dependencies with -SkipInstall. package-lock.json changed."
+  }
   Remove-ExactDirectory (Join-Path $stageApp ".next")
   foreach ($name in @("package.json", "package-lock.json", "next.config.ts")) {
     Copy-Item -LiteralPath (Join-Path $sourceDir $name) -Destination (Join-Path $stageApp $name) -Force
@@ -151,6 +158,15 @@ else {
   }
   $nextDir = Join-Path $sourceDir ".next"
   Invoke-Robocopy $nextDir (Join-Path $stageApp ".next") @("/XD", (Join-Path $nextDir "cache"), (Join-Path $nextDir "dev"))
+  if ($dependenciesChanged) {
+    Push-Location $stageApp
+    try {
+      $env:PATH = "$runtimeDir;$env:PATH"
+      & $npmCmd ci --omit=dev --no-audit --no-fund
+      if ($LASTEXITCODE -ne 0) { throw "Refreshing portable dependencies failed: $LASTEXITCODE" }
+    }
+    finally { Pop-Location }
+  }
 }
 
 New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "runtime") | Out-Null
@@ -184,6 +200,7 @@ Pi Web Windows 便携版
   Pi-Web-Portable.exe --check-update
   Pi-Web-Portable.exe --verify-update
   Pi-Web-Portable.exe --stop
+  Pi-Web-Portable.exe --apply-local-update --archive <zip> --checksum <sha256> --non-interactive
 "@ | Set-Content -LiteralPath (Join-Path $stageDir "README.txt") -Encoding UTF8
 
 $launcherOutput = Join-Path $stageDir $portableExeName
@@ -230,9 +247,14 @@ Remove-ExactDirectory (Join-Path $OutputDir "logs")
 
 New-Item -ItemType Directory -Force -Path $ArchiveDir | Out-Null
 $zipPath = Join-Path $ArchiveDir $assetName
-if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
-Compress-Archive -Path (Join-Path $OutputDir "*") -DestinationPath $zipPath -CompressionLevel Optimal
-$hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$pendingZip = Join-Path $ArchiveDir ("pending-" + [guid]::NewGuid().ToString("N") + ".zip")
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory($OutputDir, $pendingZip, [IO.Compression.CompressionLevel]::Optimal, $false)
+$hash = (Get-FileHash -LiteralPath $pendingZip -Algorithm SHA256).Hash.ToLowerInvariant()
+if (Test-Path -LiteralPath $zipPath) {
+  Move-Item -LiteralPath $zipPath -Destination ($zipPath + ".backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+}
+Move-Item -LiteralPath $pendingZip -Destination $zipPath
 Set-Content -LiteralPath ($zipPath + ".sha256") -Value ("$hash  $assetName") -Encoding ASCII
 
 [pscustomobject]@{

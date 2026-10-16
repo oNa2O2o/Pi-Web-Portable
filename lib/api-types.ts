@@ -103,6 +103,10 @@ export interface SkillsResponse {
   projectResourcesLoaded: boolean;
 }
 
+export interface SkillContentResponse {
+  content: string;
+}
+
 /** One file of a bulk `PATCH /api/skills`; `error` means it was left as it was. */
 export interface SkillToggleResult {
   filePath: string;
@@ -352,9 +356,8 @@ export interface McpTestResult {
   /** At most `MCP_TEST_MAX_TOOLS`, in the server's order; `toolCount` counts all of them. */
   tools: McpTestTool[];
   toolCount: number;
-  /** Present when the server offers resources. */
-  resources?: number;
-  resourceTemplates?: number;
+  /** Present when the server offers resources, which pi lists only when a resource tool asks. */
+  resources?: true;
   serverInfo?: { name: string; version: string; title?: string };
   /** The folder a stdio server ran in. */
   cwd?: string;

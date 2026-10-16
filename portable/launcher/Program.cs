@@ -6,6 +6,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -16,7 +17,7 @@ using System.Windows.Forms;
 
 internal static class Program
 {
-    private const int Port = 30141;
+    private static int Port = 30141;
     private const string Host = "127.0.0.1";
     private static readonly string Root = Path.GetDirectoryName(Process.GetCurrentProcess().MainModule.FileName);
     private static readonly string AppRoot = Path.Combine(Root, "app");
@@ -25,6 +26,7 @@ internal static class Program
     private static readonly string LogsRoot = Path.Combine(Root, "logs");
     private static readonly string ManifestPath = Path.Combine(Root, "portable-manifest.json");
     private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+    private static bool NonInteractive;
     private static readonly string[] ManagedEntries =
     {
         "app",
@@ -40,18 +42,31 @@ internal static class Program
     {
         try
         {
+            NonInteractive = HasArg(args, "--non-interactive");
+            var portArgument = GetArg(args, "--port");
+            if (portArgument != null && (!int.TryParse(portArgument, out Port) || Port < 1 || Port > 65535))
+                throw new ArgumentException("Invalid --port.");
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
 
             if (HasArg(args, "--self-test")) return SelfTest();
             if (HasArg(args, "--stop")) return StopManagedServer();
             if (HasArg(args, "--apply-update")) return ApplyUpdate(args);
             if (HasArg(args, "--verify-update")) return VerifyLatestRelease(LoadManifest());
+            if (HasArg(args, "--apply-local-update"))
+            {
+                var archive = GetArg(args, "--archive");
+                var checksum = GetArg(args, "--checksum");
+                if (string.IsNullOrEmpty(archive) || string.IsNullOrEmpty(checksum))
+                    throw new ArgumentException("--apply-local-update requires --archive and --checksum.");
+                VerifyChecksum(archive, checksum);
+                StartUpdater(archive, HasArg(args, "--relaunch"), true);
+                return 0;
+            }
 
             var manifest = LoadManifest();
             if (HasArg(args, "--check-update"))
             {
-                TryOfferUpdate(manifest, true);
-                return 0;
+                return TryOfferUpdate(manifest, true);
             }
             if (!HasArg(args, "--no-update") && manifest.AutoUpdate)
             {
@@ -78,7 +93,11 @@ internal static class Program
             return 2;
         }
 
-        try { SelfTestArchiveExtraction(); }
+        try
+        {
+            EnsureCompatibleRuntime(Root);
+            SelfTestArchiveExtraction();
+        }
         catch (Exception error)
         {
             Log("Self-test failed. Archive extraction: " + error);
@@ -133,6 +152,32 @@ internal static class Program
             ReplacePackage(update, installed);
             if (File.ReadAllText(Path.Combine(installed, "app", "marker.txt")) != "new")
                 throw new InvalidDataException("Package replacement self-test failed.");
+
+            // Simulate an old launcher still holding its executable open when
+            // the updater reaches it, after app/runtime have moved to backup.
+            var lockedExe = Path.Combine(installed, "Pi-Web-Portable.exe");
+            File.WriteAllText(lockedExe, "old-launcher");
+            File.WriteAllText(Path.Combine(installed, "README.txt"), "old-readme");
+            File.WriteAllText(Path.Combine(installed, "app", "marker.txt"), "old");
+            File.WriteAllText(Path.Combine(update, "Pi-Web-Portable.exe"), "new-launcher");
+            var refused = false;
+            using (var locked = new FileStream(lockedExe, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                try { ReplacePackage(update, installed); }
+                catch (IOException) { refused = true; }
+                if (File.ReadAllText(Path.Combine(installed, "app", "marker.txt")) != "old"
+                    || File.ReadAllText(Path.Combine(installed, "README.txt")) != "old-readme")
+                    throw new InvalidDataException("Partial backup failure damaged the original package.");
+            }
+            if (!refused || File.ReadAllText(lockedExe) != "old-launcher")
+                throw new InvalidDataException("Locked-launcher rollback self-test failed.");
+
+            refused = false;
+            try { ReplacePackage(update, installed, delegate { throw new InvalidDataException("Simulated validation failure"); }); }
+            catch (InvalidDataException) { refused = true; }
+            if (!refused || File.ReadAllText(Path.Combine(installed, "app", "marker.txt")) != "old"
+                || File.ReadAllText(lockedExe) != "old-launcher")
+                throw new InvalidDataException("Post-install validation rollback self-test failed.");
         }
         finally { TryDeleteDirectory(testRoot); }
     }
@@ -144,6 +189,8 @@ internal static class Program
         {
             Path.Combine(root, "runtime", "node.exe"),
             Path.Combine(root, "app", "bin", "pi-web.js"),
+            Path.Combine(root, "app", "package.json"),
+            Path.Combine(root, "app", "node_modules", "next", "package.json"),
             Path.Combine(root, "app", ".next", "BUILD_ID"),
             Path.Combine(root, "portable-manifest.json"),
             Path.Combine(root, "Pi-Web-Portable.exe"),
@@ -158,11 +205,40 @@ internal static class Program
         if (missing.Count > 0) throw new InvalidDataException("Portable package is incomplete: " + string.Join("; ", missing));
     }
 
+    private static void EnsureCompatibleRuntime(string root)
+    {
+        var package = Json.DeserializeObject(File.ReadAllText(Path.Combine(root, "app", "package.json"))) as Dictionary<string, object>;
+        var engines = package != null && package.ContainsKey("engines") ? package["engines"] as Dictionary<string, object> : null;
+        var range = engines != null ? GetString(engines, "node", "") : "";
+        var match = Regex.Match(range, @"^\s*>=\s*(\d+\.\d+\.\d+)\s*$");
+        if (!match.Success) throw new InvalidDataException("Unsupported Node.js engine range: " + range);
+        using (var process = Process.Start(new ProcessStartInfo
+        {
+            FileName = Path.Combine(root, "runtime", "node.exe"),
+            Arguments = "--version",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+        }))
+        {
+            if (process == null || !process.WaitForExit(10000)) throw new IOException("Bundled Node.js version check timed out.");
+            var actual = process.StandardOutput.ReadToEnd().Trim();
+            if (process.ExitCode != 0 || CompareVersions(actual, match.Groups[1].Value) < 0)
+                throw new InvalidDataException("Bundled Node.js " + actual + " does not satisfy " + range);
+        }
+    }
+
     private static int RunServer(bool openBrowser)
     {
         var url = "http://" + Host + ":" + Port + "/";
         if (IsHealthy())
         {
+            if (openBrowser) OpenBrowser(url);
+            return 0;
+        }
+        if (IsPortListening())
+        {
+            Log("An existing server is listening but is slow; no duplicate process was started.");
             if (openBrowser) OpenBrowser(url);
             return 0;
         }
@@ -203,12 +279,12 @@ internal static class Program
 
         var outputTask = PumpAsync(child.StandardOutput, stdoutPath);
         var errorTask = PumpAsync(child.StandardError, stderrPath);
-        var ready = WaitForHealth(child, url, 60);
+        var ready = WaitForHealth(child, url, 180);
         if (!ready)
         {
-            Log("Pi Web did not become ready within 60 seconds.");
+            Log("Pi Web did not become ready within 180 seconds.");
             TryKill(child);
-            ShowError("Pi Web 在 60 秒内未能启动，请查看 logs\\pi-web.stderr.log。");
+            ShowError("Pi Web 在 180 秒内未能启动，请查看 logs\\pi-web.stderr.log。");
             return 3;
         }
 
@@ -222,10 +298,11 @@ internal static class Program
 
     private static bool WaitForHealth(Process child, string url, int seconds)
     {
-        for (var i = 0; i < seconds * 2; i++)
+        var deadline = DateTime.UtcNow.AddSeconds(seconds);
+        while (DateTime.UtcNow < deadline)
         {
             if (child.HasExited) return false;
-            if (IsHealthy(url)) return true;
+            if (IsHealthy()) return true;
             Thread.Sleep(500);
         }
         return false;
@@ -233,17 +310,18 @@ internal static class Program
 
     private static bool IsHealthy()
     {
-        return IsHealthy("http://" + Host + ":" + Port + "/");
+        return IsHealthy("http://" + Host + ":" + Port + "/api/agent/running");
     }
 
     private static bool IsHealthy(string url)
     {
         try
         {
-            using (var client = NewHttpClient(2000))
+            using (var client = NewHttpClient(5000))
             using (var response = client.GetAsync(url).Result)
             {
-                return response.IsSuccessStatusCode;
+                return response.IsSuccessStatusCode
+                    && response.Content.ReadAsStringAsync().Result.Contains("\"runningSessionIds\"");
             }
         }
         catch
@@ -252,9 +330,19 @@ internal static class Program
         }
     }
 
-    private static void TryOfferUpdate(Manifest manifest, bool force)
+    private static bool IsPortListening()
     {
-        if (!force && !ShouldCheckForUpdate(manifest.UpdateCheckHours)) return;
+        try
+        {
+            using (var client = new TcpClient())
+                return client.ConnectAsync(Host, Port).Wait(1000) && client.Connected;
+        }
+        catch { return false; }
+    }
+
+    private static int TryOfferUpdate(Manifest manifest, bool force)
+    {
+        if (!force && !ShouldCheckForUpdate(manifest.UpdateCheckHours)) return 0;
 
         string archive = null;
         var notifyOnFailure = force;
@@ -265,35 +353,31 @@ internal static class Program
             if (release == null)
             {
                 if (force) ShowInfo("没有找到可用的便携版 Release。");
-                return;
+                return 0;
             }
             if (CompareVersions(release.Version, manifest.PortableVersion) <= 0)
             {
                 if (force) ShowInfo("当前已经是最新便携版：" + manifest.PortableVersion);
-                return;
+                return 0;
+            }
+            if (HasRunningSessions())
+            {
+                Log("Update " + release.Version + " deferred while agent sessions are running.");
+                if (force) ShowInfo("有对话正在运行。请完成或停止任务后再次检查更新。");
+                return 0;
             }
 
-            var answer = MessageBox.Show(
+            var answer = NonInteractive ? DialogResult.No : MessageBox.Show(
                 "发现 Pi Web 便携版 " + release.Version + "。\n\n是否立即下载并更新？",
                 "Pi Web 便携版更新",
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information);
-            if (answer != DialogResult.Yes) return;
+            if (answer != DialogResult.Yes) return 0;
             notifyOnFailure = true;
 
             archive = DownloadVerifiedArchive(release);
 
-            var updater = Path.Combine(Path.GetTempPath(), "PiWebPortableUpdater-" + Guid.NewGuid().ToString("N") + ".exe");
-            File.Copy(Process.GetCurrentProcess().MainModule.FileName, updater, true);
-            var updaterInfo = new ProcessStartInfo
-            {
-                FileName = updater,
-                Arguments = "--apply-update --parent-pid " + Process.GetCurrentProcess().Id
-                    + " --target " + Quote(Root) + " --archive " + Quote(archive) + " --relaunch",
-                UseShellExecute = true,
-                WindowStyle = ProcessWindowStyle.Hidden,
-            };
-            Process.Start(updaterInfo);
+            StartUpdater(archive, true, false);
             archive = null;
             Environment.Exit(0);
         }
@@ -301,15 +385,34 @@ internal static class Program
         {
             Log("Update check failed: " + error);
             if (notifyOnFailure) ShowError("自动更新失败，Pi Web 将继续使用当前版本。详情请查看 logs\\launcher.log。");
+            return 1;
         }
         finally { TryDelete(archive); }
+        return 0;
+    }
+
+    private static void StartUpdater(string archive, bool relaunch, bool preserveArchive)
+    {
+        var updater = Path.Combine(Path.GetTempPath(), "PiWebPortableUpdater-" + Guid.NewGuid().ToString("N") + ".exe");
+        File.Copy(Process.GetCurrentProcess().MainModule.FileName, updater, true);
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = updater,
+            Arguments = "--apply-update --parent-pid " + Process.GetCurrentProcess().Id
+                + " --target " + Quote(Root) + " --archive " + Quote(Path.GetFullPath(archive))
+                + (relaunch ? " --relaunch" : "") + (preserveArchive ? " --preserve-archive" : "")
+                + " --port " + Port
+                + (NonInteractive ? " --non-interactive" : ""),
+            UseShellExecute = true,
+            WindowStyle = ProcessWindowStyle.Hidden,
+        });
     }
 
     private static ReleaseInfo GetLatestRelease(Manifest manifest)
     {
         if (string.IsNullOrEmpty(manifest.Repository)) return null;
-        var endpoint = "https://api.github.com/repos/" + manifest.Repository + "/releases?per_page=20";
-        using (var client = NewHttpClient(5000))
+        var endpoint = "https://api.github.com/repos/" + manifest.Repository + "/releases?per_page=100";
+        using (var client = NewHttpClient(20000))
         using (var response = client.GetAsync(endpoint).Result)
         {
             response.EnsureSuccessStatusCode();
@@ -337,7 +440,7 @@ internal static class Program
                     if (string.Equals(name, manifest.AssetName, StringComparison.OrdinalIgnoreCase)) result.ArchiveUrl = url;
                     if (string.Equals(name, manifest.AssetName + ".sha256", StringComparison.OrdinalIgnoreCase)) result.ChecksumUrl = url;
                 }
-                if (string.IsNullOrEmpty(result.ArchiveUrl)) continue;
+                if (string.IsNullOrEmpty(result.ArchiveUrl) || string.IsNullOrEmpty(result.ChecksumUrl)) continue;
                 if (best == null || CompareVersions(result.Version, best.Version) > 0) best = result;
             }
             return best;
@@ -407,19 +510,38 @@ internal static class Program
 
         try
         {
+            target = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar);
+            if (target.Length <= Path.GetPathRoot(target).TrimEnd(Path.DirectorySeparatorChar).Length
+                || !File.Exists(Path.Combine(target, "portable-manifest.json"))
+                || !File.Exists(Path.Combine(target, "Pi-Web-Portable.exe")))
+                throw new InvalidDataException("Update target is not an existing portable installation.");
+            if (HasRunningSessions())
+                throw new InvalidOperationException("Update deferred: agent sessions are running.");
             WaitForParent(parentPid);
             var staging = CreateShortStagingDirectory(archive);
-            ExtractSafely(archive, staging);
-            EnsureCompletePackage(staging);
-            StopManagedServerAt(target);
-            ReplacePackage(staging, target);
-            TryDelete(archive);
-            TryDeleteDirectory(staging);
+            try
+            {
+                ExtractSafely(archive, staging);
+                EnsureCompletePackage(staging);
+                EnsureCompatibleRuntime(staging);
+                var candidate = LoadManifestAt(Path.Combine(staging, "portable-manifest.json"));
+                var current = LoadManifestAt(Path.Combine(target, "portable-manifest.json"));
+                if (CompareVersions(candidate.PortableVersion, current.PortableVersion) < 0)
+                    throw new InvalidDataException("Refusing an older portable package.");
+                if (HasRunningSessions())
+                    throw new InvalidOperationException("Update deferred: an agent session started while preparing the update.");
+                StopManagedServerAt(target);
+                WaitForInstalledLaunchers(target);
+                ReplacePackage(staging, target, delegate { EnsureCompletePackage(target); EnsureCompatibleRuntime(target); });
+                LogTo(Path.Combine(target, "logs", "launcher.log"), "Update installed: " + candidate.PortableVersion);
+            }
+            finally { TryDeleteDirectory(staging); }
+            if (!HasArg(args, "--preserve-archive")) TryDelete(archive);
 
             var exe = Path.Combine(target, "Pi-Web-Portable.exe");
             if (HasArg(args, "--relaunch") && File.Exists(exe))
             {
-                Process.Start(new ProcessStartInfo { FileName = exe, UseShellExecute = true });
+                Process.Start(new ProcessStartInfo { FileName = exe, Arguments = "--port " + Port, UseShellExecute = true });
             }
             return 0;
         }
@@ -430,7 +552,7 @@ internal static class Program
             var exe = Path.Combine(target, "Pi-Web-Portable.exe");
             if (HasArg(args, "--relaunch") && File.Exists(exe))
             {
-                try { Process.Start(new ProcessStartInfo { FileName = exe, UseShellExecute = true }); }
+                try { Process.Start(new ProcessStartInfo { FileName = exe, Arguments = "--no-update --port " + Port, UseShellExecute = true }); }
                 catch { }
             }
             return 5;
@@ -539,30 +661,42 @@ internal static class Program
         throw new IOException("Could not create a unique update backup directory.");
     }
 
-    private static void ReplacePackage(string staging, string target)
+    private static void ReplacePackage(string staging, string target, Action validate = null)
     {
         var backup = CreateShortBackupDirectory(target);
+        var savedNames = new List<string>();
+        var installedNames = new List<string>();
         try
         {
             foreach (var name in ManagedEntries)
             {
                 var current = Path.Combine(target, name);
                 var saved = Path.Combine(backup, name);
-                MoveEntry(current, saved);
+                if (Directory.Exists(current) || File.Exists(current))
+                {
+                    MoveEntry(current, saved);
+                    savedNames.Add(name);
+                }
             }
 
             foreach (var name in ManagedEntries)
             {
                 var source = Path.Combine(staging, name);
                 var destination = Path.Combine(target, name);
-                CopyEntry(source, destination);
+                if (Directory.Exists(source) || File.Exists(source))
+                {
+                    // Track before copying: a failed copy may leave a partial directory.
+                    installedNames.Add(name);
+                    CopyEntry(source, destination);
+                }
             }
+            if (validate != null) validate();
             TryDeleteDirectory(backup);
         }
         catch
         {
-            foreach (var name in ManagedEntries) DeleteEntry(Path.Combine(target, name));
-            foreach (var name in ManagedEntries)
+            foreach (var name in installedNames) DeleteEntry(Path.Combine(target, name));
+            foreach (var name in savedNames)
             {
                 var saved = Path.Combine(backup, name);
                 var current = Path.Combine(target, name);
@@ -613,6 +747,12 @@ internal static class Program
         {
             try
             {
+                using (var process = Process.GetProcessById(pid))
+                {
+                    var expected = Path.GetFullPath(Path.Combine(root, "runtime", "node.exe"));
+                    if (!string.Equals(Path.GetFullPath(process.MainModule.FileName), expected, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("PID no longer belongs to this portable package.");
+                }
                 using (var taskkill = Process.Start(new ProcessStartInfo
                 {
                     FileName = "taskkill.exe",
@@ -621,9 +761,47 @@ internal static class Program
                     UseShellExecute = false,
                 })) taskkill.WaitForExit(10000);
             }
-            catch (Exception error) { LogTo(Path.Combine(root, "logs", "launcher.log"), "Stop failed: " + error); }
+            catch (ArgumentException) { }
+            catch (Exception error)
+            {
+                LogTo(Path.Combine(root, "logs", "launcher.log"), "Stop failed: " + error);
+                throw;
+            }
         }
         TryDelete(pidPath);
+    }
+
+    private static bool HasRunningSessions()
+    {
+        if (!IsPortListening()) return false;
+        using (var client = NewHttpClient(15000))
+        using (var response = client.GetAsync("http://" + Host + ":" + Port + "/api/agent/running").Result)
+        {
+            response.EnsureSuccessStatusCode();
+            var state = Json.DeserializeObject(response.Content.ReadAsStringAsync().Result) as Dictionary<string, object>;
+            if (state == null || !state.ContainsKey("runningSessionIds"))
+                throw new InvalidDataException("Could not verify running sessions before updating.");
+            var ids = state["runningSessionIds"] as object[];
+            return ids == null || ids.Length > 0;
+        }
+    }
+
+    private static void WaitForInstalledLaunchers(string target)
+    {
+        var exe = Path.GetFullPath(Path.Combine(target, "Pi-Web-Portable.exe"));
+        foreach (var process in Process.GetProcessesByName("Pi-Web-Portable"))
+        {
+            using (process)
+            {
+                if (process.Id == Process.GetCurrentProcess().Id) continue;
+                string path;
+                try { path = process.MainModule.FileName; }
+                catch { continue; }
+                if (string.Equals(Path.GetFullPath(path), exe, StringComparison.OrdinalIgnoreCase)
+                    && !process.WaitForExit(30000))
+                    throw new IOException("The installed launcher is still running; the original package was preserved.");
+            }
+        }
     }
 
     private static Manifest LoadManifest()
@@ -671,12 +849,39 @@ internal static class Program
 
     private static void DownloadFile(string url, string destination)
     {
-        using (var client = NewHttpClient(120000))
-        using (var response = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).Result)
+        for (var attempt = 0; ; attempt++)
         {
-            response.EnsureSuccessStatusCode();
-            using (var input = response.Content.ReadAsStreamAsync().Result)
-            using (var output = File.Create(destination)) input.CopyTo(output);
+            try
+            {
+                using (var client = NewHttpClient(30000))
+                using (var response = client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead).Result)
+                using (var deadline = new CancellationTokenSource(TimeSpan.FromMinutes(15)))
+                {
+                    response.EnsureSuccessStatusCode();
+                    using (var input = response.Content.ReadAsStreamAsync().Result)
+                    using (var output = File.Create(destination))
+                    {
+                        var buffer = new byte[81920];
+                        while (true)
+                        {
+                            using (var idle = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token))
+                            {
+                                idle.CancelAfter(TimeSpan.FromSeconds(45));
+                                var count = input.ReadAsync(buffer, 0, buffer.Length, idle.Token).GetAwaiter().GetResult();
+                                if (count == 0) return;
+                                output.Write(buffer, 0, count);
+                            }
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                TryDelete(destination);
+                if (attempt >= 2) throw;
+                Log("Download interrupted; retrying attempt " + (attempt + 2) + ".");
+                Thread.Sleep(1000 * (attempt + 1));
+            }
         }
     }
 
@@ -736,8 +941,12 @@ internal static class Program
     private static void WaitForParent(int pid)
     {
         if (pid <= 0) return;
-        try { using (var parent = Process.GetProcessById(pid)) parent.WaitForExit(60000); }
-        catch { }
+        try
+        {
+            using (var parent = Process.GetProcessById(pid))
+                if (!parent.WaitForExit(60000)) throw new IOException("The parent launcher did not exit.");
+        }
+        catch (ArgumentException) { }
     }
 
     private static void TryKill(Process process)
@@ -793,12 +1002,14 @@ internal static class Program
 
     private static void ShowError(string message)
     {
+        if (NonInteractive) { Log(message); return; }
         try { MessageBox.Show(message, "Pi Web 便携版", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         catch { }
     }
 
     private static void ShowInfo(string message)
     {
+        if (NonInteractive) { Log(message); return; }
         try { MessageBox.Show(message, "Pi Web 便携版", MessageBoxButtons.OK, MessageBoxIcon.Information); }
         catch { }
     }
