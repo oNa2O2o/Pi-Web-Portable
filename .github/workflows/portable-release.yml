@@ -6,7 +6,7 @@ on:
       portable_version:
         description: Portable version in x.y.z format
         required: true
-        default: 1.3.1
+        default: 1.3.2
   push:
     tags:
       - "portable-v*"
@@ -90,6 +90,12 @@ jobs:
             -PackageDir (Join-Path $env:RUNNER_TEMP "Pi-web-portable") `
             -ArchivePath "portable/dist/pi-web-portable-win-x64.zip" `
             -ChecksumPath "portable/dist/pi-web-portable-win-x64.zip.sha256"
+
+      - name: Verify packaged model selection after failed resends
+        shell: pwsh
+        run: |
+          node scripts/verify-resend-model.mjs (Join-Path $env:RUNNER_TEMP "Pi-web-portable\app")
+          if ($LASTEXITCODE -ne 0) { throw "Packaged resend model verification failed" }
 
       - name: Verify session naming with isolated provider
         shell: pwsh

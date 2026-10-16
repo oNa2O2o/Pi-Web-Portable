@@ -18,7 +18,7 @@
 升级与打包前必须运行：
 
 ```powershell
-npm run test:anthropic-tool-ids
+npm run test:models
 ```
 
 此检查必须保留在构建命令及发布工作流中。若新版 SDK 改变请求结构或扩展钩子，
@@ -37,6 +37,20 @@ npm run test:anthropic-tool-ids
 - 打包后执行 `node scripts/verify-billion-context.mjs --app-dir <包目录>/app`，
   经实际编译后的 HTTP 服务复测，避免只验证源码却发布了旧构建。
 - 此检查覆盖短历史请求路径，不代表已验证所有长上下文压缩阈值及摘要质量。
+
+## 2026-10-16：重发旧消息保留当前模型
+
+- 同一对话切换模型后，编辑/重发旧用户消息必须使用当前选择的模型及思考档位。
+- 重发导航会回到旧消息之前，不能因此丢失后续的 `model_change` 选择记录。
+  `navigate_tree` 的 `preserveModel: true` 在导航成功后，将当前模型写到新分支，
+  再恢复当前思考档位；导航被取消时不写入。
+- 此标记只用于编辑/重发；普通分支浏览保持原行为。
+- 提供商报错或连接超时后再次重发、刷新或重开会话，仍必须保留当前选择。
+- `lib/resend-model.integration.test.mjs` 用真实 SDK 验证失败、重开及后续成功请求；
+  `hooks/resend-model.test.mjs` 验证浏览器编辑发送路径确实传入保留标记。
+- 构建与 `-SkipBuild` 均须执行 `npm run test:models` 所包含的回归检查。
+- 打包后执行 `node scripts/verify-resend-model.mjs <包目录>/app`，验证实际 HTTP
+  路径在 400/504 后重发、刷新及进程重启仍保留选择，并能继续成功响应。
 
 ## 已有行为
 

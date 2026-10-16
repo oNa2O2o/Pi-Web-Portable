@@ -434,7 +434,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const previousScrollTopRef = useRef(0);
   const liveFollowFrameRef = useRef<number | null>(null);
   const executeBashRef = useRef<(command: string, excludeFromContext: boolean) => Promise<void> | undefined>(undefined);
-  const handleNavigateRef = useRef<((entryId: string) => Promise<boolean>) | undefined>(undefined);
+  const handleNavigateRef = useRef<((entryId: string, preserveModel?: boolean) => Promise<boolean>) | undefined>(undefined);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const ensuringNewSessionRef = useRef<Promise<string | null> | null>(null);
   // The command list as last loaded, and the get_commands request under way, if
@@ -1732,7 +1732,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // keeps the new leaf until the server can apply both atomically.
       const entryId = editEntryId;
       setEdit(null);
-      if (!(await handleNavigateRef.current?.(entryId))) {
+      if (!(await handleNavigateRef.current?.(entryId, true))) {
         setEdit(entryId);
         restoreSubmission(message, images, composerDraftKey);
         return;
@@ -1927,7 +1927,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     }
   }, [addNotice, onSessionForked]);
 
-  const handleNavigate = useCallback(async (entryId: string): Promise<boolean> => {
+  const handleNavigate = useCallback(async (entryId: string, preserveModel = false): Promise<boolean> => {
     if (bashRunningRef.current) return false;
     const sid = sessionIdRef.current;
     if (!sid) return false;
@@ -1935,6 +1935,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       const result = await sendAgentCommand<{ cancelled?: boolean }>(sid, {
         type: "navigate_tree",
         targetId: entryId,
+        ...(preserveModel ? { preserveModel: true } : {}),
       });
       if (result?.cancelled || sessionIdRef.current !== sid) return false;
       await loadSession(sid);

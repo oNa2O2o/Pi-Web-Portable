@@ -49,6 +49,14 @@ The copy then gets a name of its own, so the tree tells it from its source: the 
 The answer carries the copy's catalogue row (`readSessionInfo()` once the name is written, the list's own shape, plus `relation: { kind: "fork", originSessionId }`), so the sidebar shows it, named, before the next list load and the row does not move when that load replaces it.
 
 ## In-session branching waits for the run
+Editing/resending calls `navigate_tree` with `preserveModel: true`. After successful
+navigation, the wrapper records the currently selected model on the new branch and
+restores its thinking level. Otherwise navigation before the old user prompt can
+discard a later `model_change`, and an error followed by reload restores the old model.
+Cancelled navigation records nothing; ordinary branch browsing omits the flag.
+The hook and real-SDK regressions live in `hooks/resend-model.test.mjs` and
+`lib/resend-model.integration.test.mjs`; keep them in the model build gate.
+
 pi's `navigateTree()` refuses while streaming or compacting: the file has one leaf pointer that the run appends under, and navigating swaps the agent's context. So "Edit from here" is hidden while busy, the BranchNavigator renders read-only (`locked`) with a note, and `handleLeafChange` refuses (switching only the view would show the live run under another branch). To branch from a running session, fork it.
 
 ## Two kinds of branching — don't confuse them

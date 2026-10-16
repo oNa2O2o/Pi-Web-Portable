@@ -698,11 +698,31 @@ export class AgentSessionWrapper {
    */
   private async navigateTreeKeepingToolSelection(
     targetId: string,
-    options: { summarize?: boolean },
+    options: { summarize?: boolean; preserveModel?: boolean },
   ): Promise<{ cancelled: boolean }> {
     const activeBefore = this.inner.getActiveToolNames();
-    const result = await this.inner.navigateTree(targetId, options);
-    if (result.cancelled || this.chatOnly) return { cancelled: result.cancelled };
+    const selectedModel = options.preserveModel ? this.inner.model : undefined;
+    const selectedThinking = this.inner.agent.state?.thinkingLevel;
+    const result = await this.inner.navigateTree(targetId, options.summarize === undefined ? {} : { summarize: options.summarize });
+    if (result.cancelled) return { cancelled: true };
+    if (selectedModel) {
+      // Editing/resending branches before the old prompt, which may also cut
+      // off the user's later model_change. Record the current selection on
+      // this branch so a failed request or wrapper restart cannot revert it.
+      await this.inner.setModel(selectedModel);
+      if (selectedThinking) {
+        this.inner.setThinkingLevel(selectedThinking);
+        // setThinkingLevel writes only when the in-memory level changes.
+        // Navigation can leave memory unchanged while removing its entry.
+        const thinking = this.inner.agent.state?.thinkingLevel;
+        const recorded = this.inner.sessionManager.getBranch()
+          .findLast((entry) => entry.type === "thinking_level_change");
+        if (thinking && recorded?.thinkingLevel !== thinking) {
+          this.inner.sessionManager.appendThinkingLevelChange(thinking);
+        }
+      }
+    }
+    if (this.chatOnly) return { cancelled: false };
 
     const entries = this.inner.sessionManager.getEntries() as unknown as SessionEntry[];
     if (!readSubagentSessionResources(entries)) {
@@ -1201,7 +1221,9 @@ export class AgentSessionWrapper {
         if (this.inner.isBashRunning) {
           throw new Error("Cannot navigate while a shell command is running");
         }
-        return this.navigateTreeKeepingToolSelection(command.targetId as string, {});
+        return this.navigateTreeKeepingToolSelection(command.targetId as string, {
+          preserveModel: command.preserveModel === true,
+        });
       }
 
       case "set_thinking_level": {
