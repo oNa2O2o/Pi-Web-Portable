@@ -6,7 +6,8 @@
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
   [switch]$SkipInstall,
-  [switch]$ReuseStage
+  [switch]$ReuseStage,
+  [switch]$CheckRuntimeOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -54,7 +55,38 @@ function Remove-ExactDirectory([string]$path) {
   }
 }
 
+function Get-ExactNodeVersion([string]$path) {
+  $versionText = (& $path --version 2>&1 | Out-String).Trim()
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) { throw "Unable to read bundled Node.js version from ${path}: exit $exitCode" }
+  if ($versionText -notmatch '^v?(\d+\.\d+\.\d+)(?:[-+].*)?$') {
+    throw "Unable to parse bundled Node.js version from ${path}: $versionText"
+  }
+  return [version]$Matches[1]
+}
+
+function Get-MinimumNodeVersion([string]$engine) {
+  if ($engine -notmatch '^\s*>=\s*(\d+\.\d+\.\d+)\s*$') {
+    throw "Unsupported package.json engines.node range for portable packaging: $engine"
+  }
+  return [version]$Matches[1]
+}
+
 if (-not (Test-Path -LiteralPath $nodeExe)) { throw "Bundled Node.js not found: $nodeExe" }
+$package = Get-Content -Raw -LiteralPath (Join-Path $sourceDir "package.json") | ConvertFrom-Json
+$appVersion = [string]$package.version
+$nodeEngine = [string]$package.engines.node
+$minimumNodeVersion = Get-MinimumNodeVersion $nodeEngine
+$runtimeNodeVersion = Get-ExactNodeVersion $nodeExe
+if ($runtimeNodeVersion -lt $minimumNodeVersion) {
+  throw "Bundled Node.js $runtimeNodeVersion does not satisfy package.json engines.node $nodeEngine. Pass -RuntimeDir with Node.js $minimumNodeVersion or newer. Runtime: $nodeExe"
+}
+Write-Host "Portable runtime check passed: Node.js $runtimeNodeVersion ($nodeExe)"
+if ($CheckRuntimeOnly) {
+  $global:LASTEXITCODE = 0
+  return
+}
+
 if (-not (Test-Path -LiteralPath $csc)) { throw "Windows C# compiler not found: $csc" }
 if (-not (Test-Path -LiteralPath $launcherSource)) { throw "Launcher source not found: $launcherSource" }
 if ((-not $SkipBuild -or (-not $ReuseStage -and -not $SkipInstall)) -and -not (Test-Path -LiteralPath $npmCmd)) {
@@ -62,9 +94,6 @@ if ((-not $SkipBuild -or (-not $ReuseStage -and -not $SkipInstall)) -and -not (T
 }
 if ($PortableVersion -notmatch '^\d+\.\d+\.\d+$') { throw "PortableVersion must use x.y.z format: $PortableVersion" }
 if ($Repository -notmatch '^[^/]+/[^/]+$') { throw "Repository must use owner/name format: $Repository" }
-
-$package = Get-Content -Raw -LiteralPath (Join-Path $sourceDir "package.json") | ConvertFrom-Json
-$appVersion = [string]$package.version
 
 if (-not $SkipBuild) {
   $tempDir = Join-Path $sourceDir ".build-home\portable-tmp"

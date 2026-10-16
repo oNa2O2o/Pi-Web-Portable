@@ -10,9 +10,29 @@ $packageDir = (Resolve-Path -LiteralPath $PackageDir).Path
 $launcherPath = Join-Path $packageDir "Pi-Web-Portable.exe"
 $pidPath = Join-Path $packageDir "data\pi-web.pid"
 $expectedNodePath = [IO.Path]::GetFullPath((Join-Path $packageDir "runtime\node.exe"))
+$packageJsonPath = Join-Path $packageDir "app\package.json"
 $url = "http://127.0.0.1:30141/"
 
 if (-not (Test-Path -LiteralPath $launcherPath)) { throw "Portable launcher not found: $launcherPath" }
+if (-not (Test-Path -LiteralPath $expectedNodePath)) { throw "Portable Node.js runtime not found: $expectedNodePath" }
+if (-not (Test-Path -LiteralPath $packageJsonPath)) { throw "Portable package.json not found: $packageJsonPath" }
+
+$package = Get-Content -Raw -LiteralPath $packageJsonPath | ConvertFrom-Json
+$nodeEngine = [string]$package.engines.node
+if ($nodeEngine -notmatch '^\s*>=\s*(\d+\.\d+\.\d+)\s*$') {
+  throw "Unsupported package.json engines.node range in portable package: $nodeEngine"
+}
+$minimumNodeVersion = [version]$Matches[1]
+$versionText = (& $expectedNodePath --version 2>&1 | Out-String).Trim()
+$versionExitCode = $LASTEXITCODE
+if ($versionExitCode -ne 0) { throw "Portable Node.js version check failed with exit code $versionExitCode." }
+if ($versionText -notmatch '^v?(\d+\.\d+\.\d+)(?:[-+].*)?$') {
+  throw "Unable to parse portable Node.js version: $versionText"
+}
+$runtimeNodeVersion = [version]$Matches[1]
+if ($runtimeNodeVersion -lt $minimumNodeVersion) {
+  throw "Portable Node.js $runtimeNodeVersion does not satisfy package.json engines.node $nodeEngine."
+}
 
 $existingListener = Get-NetTCPConnection -LocalPort 30141 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if ($null -ne $existingListener) {
@@ -48,7 +68,7 @@ try {
     throw "Portable launcher used the wrong Node.js runtime: $($nodeProcess.ExecutablePath)"
   }
 
-  Write-Host "Portable smoke test passed: HTTP $statusCode, Node PID $nodePid"
+  Write-Host "Portable smoke test passed: HTTP $statusCode, Node.js $runtimeNodeVersion, PID $nodePid"
 }
 finally {
   if ($null -ne $launcher) {

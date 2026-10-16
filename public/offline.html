@@ -72,12 +72,47 @@
       }
     </style>
   </head>
-  <body>
+  <body data-pi-web-offline>
     <main>
       <img src="/icons/icon-192.png" alt="" />
       <h1>Pi Web is offline</h1>
-      <p>Reconnect to the local Pi Web server, then try again.</p>
+      <p>Waiting for the local Pi Web server. This page will reconnect automatically.</p>
       <button type="button" onclick="location.reload()">Try again</button>
     </main>
+    <script>
+      // The server may recover after a short busy period. Probe the requested
+      // page itself so a working API cannot send us into a reload loop.
+      let checking = false;
+      let retryTimer;
+      async function reconnect() {
+        if (checking || document.hidden) return;
+        checking = true;
+        clearTimeout(retryTimer);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+        try {
+          const response = await fetch(location.href, {
+            cache: "no-store",
+            signal: controller.signal,
+          });
+          if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+            const html = await response.text();
+            if (!html.includes("data-pi-web-offline")) {
+              location.reload();
+              return;
+            }
+          }
+        } catch {
+          // Keep the manual retry available while the server is offline.
+        } finally {
+          clearTimeout(timeout);
+          checking = false;
+          retryTimer = setTimeout(reconnect, 5000);
+        }
+      }
+      window.addEventListener("online", reconnect);
+      document.addEventListener("visibilitychange", reconnect);
+      retryTimer = setTimeout(reconnect, 2000);
+    </script>
   </body>
 </html>
