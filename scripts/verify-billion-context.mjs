@@ -35,6 +35,8 @@ const upstream = createServer(async (req, res) => {
     assert.ok(systemText.includes("- Additional docs:"));
     assert.ok(!systemText.includes("pi packages (docs/packages.md)"),
       "the plugin must not restore the rejected system index");
+    assert.ok(!JSON.stringify(body).includes("FOREIGN_REASONING_MUST_NOT_BECOME_DIALOGUE"),
+      "the plugin must not reintroduce foreign reasoning as assistant text");
     const blocks = body.messages.flatMap((m) => Array.isArray(m.content) ? m.content : []);
     const calls = blocks.filter((b) => b.type === "tool_use");
     const results = blocks.filter((b) => b.type === "tool_result");
@@ -158,7 +160,10 @@ try {
   manager.appendMessage({ role: "user", content: "Read example.", timestamp: 1 });
   manager.appendMessage({
     role: "assistant", provider: "Gemini", model: "gemini-test", api: "openai-responses",
-    content: [{ type: "toolCall", id: "call_old_plugin_history", name: "read", arguments: { path: "example.txt" } }],
+    content: [
+      { type: "thinking", thinking: "FOREIGN_REASONING_MUST_NOT_BECOME_DIALOGUE" },
+      { type: "toolCall", id: "call_old_plugin_history", name: "read", arguments: { path: "example.txt" } },
+    ],
     stopReason: "toolUse", timestamp: 2,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
   });
@@ -220,7 +225,7 @@ try {
   assert.ok((await readFile(manager.getSessionFile(), "utf8")).startsWith(originalHistory));
   console.log(JSON.stringify({
     plugin: `${plugin.name}@${plugin.version}`, passed: true, compiledApplication: Boolean(appDir), routedRequests: routed,
-    checks: ["native fetch interception", "real proxy parse/serialize", "reference-only system docs", "compression tools active", "foreign IDs paired", "new read tool roundtrip", "original history preserved"],
+    checks: ["native fetch interception", "real proxy parse/serialize", "reference-only system docs", "foreign reasoning not promoted to dialogue", "compression tools active", "foreign IDs paired", "new read tool roundtrip", "original history preserved"],
     limitation: "Small synthetic history; no compression threshold or live provider tested.",
   }, null, 2));
 } finally {

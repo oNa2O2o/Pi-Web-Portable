@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { InlineExtension } from "@earendil-works/pi-coding-agent";
 import { normalizeAnthropicSystemDocs } from "./anthropic-system-docs";
+import installAnthropicForeignThinking from "./anthropic-foreign-thinking";
 
 export const ANTHROPIC_TOOL_IDS_EXTENSION_NAME = "pi-web-anthropic-tool-ids";
 
@@ -85,6 +86,7 @@ export function createAnthropicToolIdsExtension(): InlineExtension {
     name: ANTHROPIC_TOOL_IDS_EXTENSION_NAME,
     hidden: true,
     factory: (pi) => {
+      installAnthropicForeignThinking(pi);
       pi.on("before_provider_request", (event, ctx) => normalizeAnthropicSystemDocs(
         normalizeAnthropicToolIds(event.payload, ctx.model), ctx.model,
       ));

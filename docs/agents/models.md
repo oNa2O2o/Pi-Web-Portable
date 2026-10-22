@@ -9,6 +9,16 @@ normal, Chat-only and subagent sessions, including reload. Keep the SDK transpor
 session integration tests in `npm run test:anthropic-tool-ids` passing on upgrades;
 see `docs/upgrade-requirements.md`.
 
+## Cross-API reasoning history
+`lib/anthropic-foreign-thinking.ts` projects native requests to `api.chiyi.cc`
+without foreign API assistant `thinking` blocks. Pi SDK 1.2 otherwise turns
+these into plain assistant text. Stored reasoning remains intact, as do all
+user text, visible answers, tools/results, system rules and native Anthropic
+thinking/signatures. Do not apply keyword-based text stripping.
+The existing hidden Anthropic extension installs this context hook in ordinary,
+Chat-only and subagent sessions. Reload must preserve it. An idempotent copy
+in the user extensions directory supplies the repair to an older running build.
+
 ## Native Anthropic relay system documentation
 The same request hook also runs `lib/anthropic-system-docs.ts` for `api.chiyi.cc`.
 The endpoint rejects the SDK's detailed Pi documentation index in system text.

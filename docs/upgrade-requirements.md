@@ -4,6 +4,22 @@
 不能用“上游代码已更新”作为删除修复的理由。只有替代实现通过相同回归测试后，
 才可以移除旧实现。
 
+## 2026-10-21：元衡 Gemini 4 思考参数兼容
+
+- `google-generative-ai` 的自定义 baseUrl 必须包含 `/v1beta`；仅填写网站根地址
+  会使聊天请求收到 HTML。保存配置后应让旧模型运行时失效。
+- Pi 1.2 未把 `gemini-4-argon` 识别为使用 `thinkingLevel` 的模型，会将所有启用的
+  思考档位发成 `thinkingBudget: -1`。元衡原生接口的对照测试中，该参数出现
+  60 秒无响应超时，而显式 `thinkingLevel: HIGH` 成功回复。
+- `lib/gemini-4-thinking.ts` 是独立 Pi 扩展，当前部署于用户数据目录
+  `~/.pi/agent/extensions/gemini-4-thinking.ts`，在发送前替换该模型的旧思考参数。
+  必须保留用户数据目录内的扩展；不能通过清空扩展目录升级。
+- 仅适配元衡的 `gemini-4-argon` 原生接口。保留用户选定的档位、输出上限、
+  系统提示、工具及所有历史；关闭思考、显式原生档位和其他提供商保持原行为。
+  SDK 已提供原生 `thinkingLevel` 时该扩展不再修改请求。
+- `npm run test:models` 包含参数及扩展钩子回归。验收仍需实际高思考聊天、
+  工具结果继续对话，以及原有会话重新加载；单次 OK 不代表上游持续可用。
+
 ## 2026-10-16：Claude 跨模型工具历史兼容
 
 - 词易 Claude 使用原生 `anthropic-messages`；不要改回 OpenAI 协议。
@@ -14,6 +30,22 @@
 - 保留原始会话 JSONL、工具参数、正文和原生 `toolu_` ID；禁止批量改写或删除历史。
 - 普通会话、Chat only 和子代理均需加载此兼容处理；其他协议和端点保持原行为。
 - 不可只看“模型连接测试通过”：必须测试带工具历史的继续对话及后续工具调用。
+
+### 2026-10-21：跨 API 思考记录不得转成正文
+
+- Pi SDK 1.2 会将其他 API 的助手 `thinking` 块转换成普通文本，再发给 Claude。
+  `lib/anthropic-foreign-thinking.ts` 在请求上下文投影阶段阻止这种转换，
+  仅作用于 `api.chiyi.cc` 的原生 Anthropic 请求。
+- 只移除发送副本中来自其他 API 的 `thinking` 类型块，不按词语筛选正文；
+  用户消息、正式回答、工具调用与结果、系统规则、原生 Anthropic 思考与签名不变。
+  原始会话文件及其中的思考记录必须保留。
+- `createAnthropicToolIdsExtension()` 注册该上下文钩子，普通会话、
+  Chat-only、子代理及 reload 均由集成测试覆盖。
+  当前运行版通过用户目录 `extensions/anthropic-foreign-thinking.ts` 加载；
+  内置修复与独立扩展并存时应幂等，不得重复改写。
+- 在原失败会话副本上，同一 Opus 5.5、同一原始提问经过该修正后得到
+  `end_turn` 和真实业务回答；不是空白聊天的 OK 测试。
+  不能将这条证据推广为所有上游拒绝都能或都应绕过。
 
 升级与打包前必须运行：
 

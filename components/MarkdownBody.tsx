@@ -16,6 +16,12 @@ interface MarkdownBodyProps {
   className?: string;
   isStreaming?: boolean;
   cwd?: string;
+  /**
+   * Session whose transcript contains this markdown. Local images outside the
+   * session's allowed roots (e.g. a temp screenshot) are only readable when the
+   * file API can check the path is referenced by that session.
+   */
+  sessionId?: string;
   onOpenFile?: (filePath: string, page?: number) => void;
   /** A document reader's own links: relative paths and `#headings` stay in the reader. */
   onNavigateLink?: (href: string) => void;
@@ -27,14 +33,15 @@ function MarkdownImage({
   src,
   alt,
   cwd,
+  sessionId,
   ...props
-}: ComponentProps<"img"> & ExtraProps & { cwd?: string }) {
+}: ComponentProps<"img"> & ExtraProps & { cwd?: string; sessionId?: string }) {
   const insideLink = useContext(MarkdownLinkContext);
   delete props.node;
   const href = typeof src === "string" ? src : undefined;
   const filePath = href ? resolveLocalFileHref(href, cwd) : null;
   const imageSrc = filePath
-    ? `/api/files/${encodeFilePathForApi(filePath)}?type=read`
+    ? `/api/files/${encodeFilePathForApi(filePath)}?type=read${sessionId ? `&sessionId=${encodeURIComponent(sessionId)}` : ""}`
     : href;
   // Dynamic local paths are served directly by the file API.
   // eslint-disable-next-line @next/next/no-img-element
@@ -69,7 +76,7 @@ const MarkdownBlock = memo(function MarkdownBlock({ markdown, remarkPlugins, url
   );
 });
 
-export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile, onNavigateLink, keepLineBreaks }: MarkdownBodyProps) {
+export const MarkdownBody = memo(function MarkdownBody({ children, className, isStreaming, cwd, sessionId, onOpenFile, onNavigateLink, keepLineBreaks }: MarkdownBodyProps) {
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   // A streaming reply grows by a few characters per chunk; parsing all of it
   // each time made a long reply quadratic. Its finished blocks keep their
@@ -151,7 +158,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
       );
     },
     img(props) {
-      return <MarkdownImage cwd={cwd} {...props} />;
+      return <MarkdownImage cwd={cwd} sessionId={sessionId} {...props} />;
     },
     ol({ node, start, style, ...props }) {
       // An outside marker wider than the list's left padding is clipped by
@@ -171,7 +178,7 @@ export const MarkdownBody = memo(function MarkdownBody({ children, className, is
         </div>
       );
     },
-  }), [cwd, isStreaming, onOpenFile, onNavigateLink]);
+  }), [cwd, sessionId, isStreaming, onOpenFile, onNavigateLink]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>
