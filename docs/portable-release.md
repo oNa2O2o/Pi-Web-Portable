@@ -6,7 +6,8 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
-1.3.3 bundles Pi Web 0.12.2 and Node.js 24.20.0, including native Claude
+1.4.0 bundles Pi Web 0.12.2 and Node.js 24.20.0 and adds the single-file
+executable. Like 1.3.3, it includes native Claude
 tool-history compatibility with billion-context and persistent model selection
 when resending after errors or timeouts. It also replaces the affected Claude
 endpoint's rejected system documentation index with on-demand references.
@@ -14,8 +15,26 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.3.3 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.4.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable-exe.ps1
 ```
+
+`build-portable-exe.ps1` compiles `portable/bootstrap/SingleExe.cs` and appends
+the ZIP to it, producing `portable/dist/Pi-Web-Portable-win-x64.exe` plus a
+SHA256 file. Layout: `[bootstrap][zip][header JSON {portableVersion, sha256}]
+[int64 zip length][int64 header length]["PIWEBPK1"]`. When it runs, the exe:
+
+- installs to `%LOCALAPPDATA%\Pi-Web-Portable` (override with `--install-dir`
+  or `PI_WEB_PORTABLE_HOME`). On first run it verifies the embedded checksum,
+  extracts to a sibling staging directory, runs `--self-test`, then moves it in;
+- upgrades an older install through the regular `--apply-update` path, so the
+  running-session check, `data/` preservation and rollback still apply;
+- otherwise launches the installed `Pi-Web-Portable.exe` and forwards arguments.
+  The installed launcher keeps updating from the ZIP release asset.
+
+Extra flags: `--install-only`, `--wait` (return the launcher's exit code),
+`--print-install-dir`, `--payload-version`, `--non-interactive`. The log is
+`%LOCALAPPDATA%\Pi-Web-Portable.bootstrap.log`.
 
 The build verifies `engines.node`, builds the application, installs production
 dependencies from the lockfile, and produces the ZIP plus SHA256 file. When
@@ -48,7 +67,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.3.3 `
+  -ExpectedVersion 1.4.0 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 

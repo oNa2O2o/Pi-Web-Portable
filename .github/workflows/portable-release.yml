@@ -6,7 +6,7 @@ on:
       portable_version:
         description: Portable version in x.y.z format
         required: true
-        default: 1.3.3
+        default: 1.4.0
   push:
     tags:
       - "portable-v*"
@@ -103,6 +103,18 @@ jobs:
           node scripts/test-session-titles.mjs (Join-Path $env:RUNNER_TEMP "Pi-web-portable")
           if ($LASTEXITCODE -ne 0) { throw "Session naming HTTP verification failed" }
 
+      - name: Build and test single-file executable
+        shell: pwsh
+        run: |
+          & .\scripts\build-portable-exe.ps1
+          $exe = Join-Path $env:GITHUB_WORKSPACE "portable\dist\Pi-Web-Portable-win-x64.exe"
+          $installDir = Join-Path $env:RUNNER_TEMP "Pi-Web-Portable-single"
+          $install = Start-Process -FilePath $exe -ArgumentList @("--install-dir", $installDir, "--install-only", "--non-interactive") -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "Single-exe install failed: $($install.ExitCode)" }
+          $selfTest = Start-Process -FilePath $exe -ArgumentList @("--install-dir", $installDir, "--wait", "--self-test", "--non-interactive") -Wait -PassThru
+          if ($selfTest.ExitCode -ne 0) { throw "Single-exe self-test failed: $($selfTest.ExitCode)" }
+          & .\scripts\test-portable.ps1 -PackageDir $installDir -Port 31879
+
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
@@ -110,6 +122,8 @@ jobs:
           path: |
             portable/dist/pi-web-portable-win-x64.zip
             portable/dist/pi-web-portable-win-x64.zip.sha256
+            portable/dist/Pi-Web-Portable-win-x64.exe
+            portable/dist/Pi-Web-Portable-win-x64.exe.sha256
           if-no-files-found: error
 
       - name: Publish GitHub Release
@@ -118,10 +132,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $assets = @(
+            "portable/dist/Pi-Web-Portable-win-x64.exe",
+            "portable/dist/Pi-Web-Portable-win-x64.exe.sha256",
+            "portable/dist/pi-web-portable-win-x64.zip",
+            "portable/dist/pi-web-portable-win-x64.zip.sha256"
+          )
           gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --clobber
+            gh release upload "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --clobber
           } else {
-            gh release create "$env:GITHUB_REF_NAME" "portable/dist/pi-web-portable-win-x64.zip" "portable/dist/pi-web-portable-win-x64.zip.sha256" --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。解压后双击 Pi-Web-Portable.exe；启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
+            gh release create "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。推荐下载单文件 Pi-Web-Portable-win-x64.exe 并双击运行：首次运行安装到 %LOCALAPPDATA%\Pi-Web-Portable，之后直接启动；也可以下载 ZIP 解压后双击 Pi-Web-Portable.exe。启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
           }
           if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }

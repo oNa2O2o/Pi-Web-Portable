@@ -2,8 +2,12 @@
 
 This fork distributes the Windows portable edition at
 [oNa2O2o/Pi-Web-Portable](https://github.com/oNa2O2o/Pi-Web-Portable).
-Download the ZIP from [portable releases](https://github.com/oNa2O2o/Pi-Web-Portable/releases)
-and run `Pi-Web-Portable.exe`. The launcher verifies SHA256 before updating.
+Download `Pi-Web-Portable-win-x64.exe` from
+[portable releases](https://github.com/oNa2O2o/Pi-Web-Portable/releases) and
+double-click it. This single file installs Pi Web into
+`%LOCALAPPDATA%\Pi-Web-Portable` on first run, then starts it; later releases
+update in place automatically. The ZIP is still published: extract it and run
+`Pi-Web-Portable.exe`. The launcher verifies SHA256 before updating.
 Existing packages using `oNa2O2o/pi-web` follow GitHub's repository redirect.
 Portable 1.2.0 adds automatic titles from the first user demand, with required
 destination codes such as KR/EN/JP and a 12-character limit. In Settings → General,
