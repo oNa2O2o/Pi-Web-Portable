@@ -4,6 +4,18 @@
 不能用“上游代码已更新”作为删除修复的理由。只有替代实现通过相同回归测试后，
 才可以移除旧实现。
 
+## 2026-10-23：Claude 5.5 自适应思考
+
+- 词易 `api.chiyi.cc` 的原生 `claude-opus-5-5` 和 `claude-sonnet-5-5`
+  自定义模型缺少 `compat.forceAdaptiveThinking` 时，SDK 会发送旧式预算思考，
+  服务端返回 `requires adaptive thinking` 400。
+- 内置请求钩子将这两个模型的 `thinking.type=enabled` 改为 `adaptive`，
+  删除 `budget_tokens`，按当前思考档位设置 `output_config.effort`。
+  保留显式 effort、原生 adaptive 请求、关闭思考、输出上限和完整会话历史。
+- 普通会话、Chat-only、子代理与 reload 共用既有内置兼容扩展。
+  不写入用户 models.json，不分发用户凭据。其他端点和模型保持原行为。
+- `npm run test:models` 和便携包复用构建检查必须包含自适应思考回归。
+
 ## 2026-10-21：元衡 Gemini 4 思考参数兼容
 
 - `google-generative-ai` 的自定义 baseUrl 必须包含 `/v1beta`；仅填写网站根地址
