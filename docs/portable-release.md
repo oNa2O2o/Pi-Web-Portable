@@ -18,7 +18,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.4.1 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.5.0 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -70,7 +70,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.4.1 `
+  -ExpectedVersion 1.5.0 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -104,3 +104,21 @@ available.
 The `Windows portable release` workflow runs packaging, launch, upgrade, and
 naming checks. Only a `portable-v*` tag publishes release assets; a manual
 workflow run produces a downloadable workflow artifact.
+
+## Voice input plugin
+
+`portable/plugins` is copied to `appplugins`. When `apppluginspiweb-plugin-loader.cjs`
+exists, the launcher adds `--require <loader>` to `NODE_OPTIONS` and sets
+`PIWEB_PLUGIN_LOG_DIR` to `logs`. The loader only activates inside the `next start`
+process and removes itself from `NODE_OPTIONS` there, so agent tools and terminals
+do not inherit it. It:
+
+- injects `apppluginsweb*.js` into HTML pages (served from `/__piweb-plugins/`);
+- starts `apppluginsserveroice-asrserver.cjs` (sherpa-onnx, Apache-2.0) on a
+  random loopback port and proxies `/__piweb-plugins/ws/voice-asr` to it; only
+  loopback origins are accepted;
+- writes diagnostics to `logsoice-input.log`.
+
+The build installs the service dependencies with `npm ci` and downloads the
+X-ASR zh/en streaming model (~160 MB) into `portable.voice-cache`, verifying each
+file by SHA256. The Pi Web application source is not modified.

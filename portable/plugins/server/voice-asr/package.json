@@ -1,0 +1,9 @@
+{
+  "name": "piweb-voice-asr",
+  "private": true,
+  "description": "Local streaming speech recognition for the Pi Web voice-input plugin (sherpa-onnx)",
+  "dependencies": {
+    "sherpa-onnx-node": "2.0.0",
+    "ws": "8.22.0"
+  }
+}

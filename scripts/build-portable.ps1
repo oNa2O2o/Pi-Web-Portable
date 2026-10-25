@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.4.1",
+  [string]$PortableVersion = "1.5.0",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -50,7 +50,9 @@ function Remove-ExactDirectory([string]$path) {
     $allowedStage = [IO.Path]::GetFullPath((Join-Path $sourceDir "portable\.build-stage"))
     $allowedLogs = [IO.Path]::GetFullPath((Join-Path $OutputDir "logs"))
     $allowedStageBuild = [IO.Path]::GetFullPath((Join-Path $stageApp ".next"))
-    if ($resolved -ine $allowedStage -and $resolved -ine $allowedLogs -and $resolved -ine $allowedStageBuild) { throw "Refusing to remove unexpected directory: $resolved" }
+    $allowedStagePlugins = [IO.Path]::GetFullPath((Join-Path $stageApp "plugins"))
+    $allowedVoiceExtract = [IO.Path]::GetFullPath((Join-Path $sourceDir "portable\.voice-cache\extract"))
+    if ($resolved -ine $allowedStage -and $resolved -ine $allowedLogs -and $resolved -ine $allowedStageBuild -and $resolved -ine $allowedStagePlugins -and $resolved -ine $allowedVoiceExtract) { throw "Refusing to remove unexpected directory: $resolved" }
     Remove-Item -LiteralPath $resolved -Recurse -Force
   }
 }
@@ -175,6 +177,78 @@ else {
   }
 }
 
+# Browser plugins (long-press voice input + local streaming speech recognition).
+# Source lives in portable\plugins; the sherpa-onnx model is downloaded once into
+# portable\.voice-cache and verified by SHA256 before it is packaged.
+$voiceModelName = "sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05"
+$voiceModelUrl = "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/$voiceModelName.tar.bz2"
+$voiceModelFiles = [ordered]@{
+  "encoder.int8.onnx" = "908596dcc137a73b95be908ca55e88caa1b3dbbe8027c171615f4b0609c5eb1e"
+  "decoder.onnx" = "a1cbc9eac2d5e3fb6617a218c67ad6daaa7f4e0fd225f08b2c22ab0413c8c257"
+  "joiner.int8.onnx" = "aedb7fa697b2ab43f20499826fff7c997eea7d67db77be97769aeeeb726e63b3"
+  "tokens.txt" = "b818a60878b9aae978cbb8ad594acbd403d76d1af2e31ef4197c84e2dbdba27c"
+  "bpe.model" = "f87a38025a5fdd1e4e9591f6a44bb81295097ce0b80df6f4ab9f44e52c64ca5f"
+  "README.md" = ""
+}
+
+function Test-VoiceModel([string]$dir) {
+  foreach ($name in $voiceModelFiles.Keys) {
+    $file = Join-Path $dir $name
+    if (-not (Test-Path -LiteralPath $file)) { return $false }
+    $expected = $voiceModelFiles[$name]
+    if ($expected -and (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { return $false }
+  }
+  return $true
+}
+
+function Get-VoiceModel {
+  $cacheDir = Join-Path $sourceDir "portable\.voice-cache"
+  $modelDir = Join-Path $cacheDir $voiceModelName
+  if (Test-VoiceModel $modelDir) { return $modelDir }
+  New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+  $archive = Join-Path $cacheDir "$voiceModelName.tar.bz2"
+  for ($attempt = 1; $attempt -le 5; $attempt++) {
+    & curl.exe -sSfL --retry 3 -C - -o $archive $voiceModelUrl
+    if ($LASTEXITCODE -eq 0) { break }
+    Write-Warning "Voice model download attempt $attempt failed (curl exit $LASTEXITCODE)."
+  }
+  if ($LASTEXITCODE -ne 0) { throw "Voice model download failed: $voiceModelUrl" }
+  $extractDir = Join-Path $cacheDir "extract"
+  Remove-ExactDirectory $extractDir
+  New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
+  & tar.exe -xjf $archive -C $extractDir
+  if ($LASTEXITCODE -ne 0) { throw "Voice model extraction failed: $archive" }
+  $extracted = Join-Path $extractDir $voiceModelName
+  if (-not (Test-VoiceModel $extracted)) {
+    Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+    throw "Voice model files are missing or failed SHA256 verification: $extracted"
+  }
+  New-Item -ItemType Directory -Force -Path $modelDir | Out-Null
+  foreach ($name in $voiceModelFiles.Keys) { Copy-Item -LiteralPath (Join-Path $extracted $name) -Destination (Join-Path $modelDir $name) -Force }
+  Remove-ExactDirectory $extractDir
+  Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+  return $modelDir
+}
+
+$stagePlugins = Join-Path $stageApp "plugins"
+Remove-ExactDirectory $stagePlugins
+Invoke-Robocopy (Join-Path $sourceDir "portable\plugins") $stagePlugins @("/XD", "node_modules", "models")
+$voiceServiceDir = Join-Path $stagePlugins "server\voice-asr"
+Push-Location $voiceServiceDir
+try {
+  $env:PATH = "$runtimeDir;$env:PATH"
+  # npm ci rejects this lockfile because sherpa-onnx-node lists an optional
+  # sherpa-onnx-win-arm64@2.0.0 that was never published; npm install still
+  # follows the lockfile's exact versions.
+  & $npmCmd install --omit=dev --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { throw "Installing voice recognition dependencies failed: $LASTEXITCODE" }
+  if (-not (Test-Path -LiteralPath (Join-Path $voiceServiceDir "node_modules\sherpa-onnx-win-x64"))) { throw "sherpa-onnx-win-x64 was not installed." }
+}
+finally { Pop-Location }
+$voiceModelDir = Get-VoiceModel
+Invoke-Robocopy $voiceModelDir (Join-Path $voiceServiceDir "models\$voiceModelName") @()
+Remove-Item -LiteralPath (Join-Path $voiceServiceDir "package-lock.json") -Force -ErrorAction SilentlyContinue
+
 New-Item -ItemType Directory -Force -Path (Join-Path $stageDir "runtime") | Out-Null
 Copy-Item -LiteralPath $nodeExe -Destination (Join-Path $stageDir "runtime\node.exe") -Force
 $sourceIcon = Join-Path $sourceDir "portable\assets\pi-agent-icon.ico"
@@ -200,6 +274,8 @@ Pi Web Windows 便携版
 启动器会从 GitHub Releases 检查更新，并在 SHA256 校验通过后才安装。
 设置 > 常规 > 会话命名：从已有模型列表选择独立的命名模型。
 首条实际需求只自动命名一次，最多 12 字符，并保留 KR/EN/JP 等地区标注。
+语音输入：在聊天输入框上长按鼠标左键约 0.45 秒开始说话，文字边说边写入输入框，松开结束，Esc 取消。
+按住 Alt 再长按可选择麦克风。识别在本机离线完成（app\plugins\server\voice-asr），不上传声音。
 
 命令：
   Pi-Web-Portable.exe --self-test

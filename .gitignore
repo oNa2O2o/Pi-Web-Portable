@@ -48,3 +48,8 @@ yarn-error.log*
 next-env.d.ts
 .factory
 e2e_*.mjs
+
+# portable voice-input plugin: downloaded model + installed deps
+/portable/.voice-cache/
+/portable/plugins/server/*/node_modules/
+/portable/plugins/server/*/models/
