@@ -16,6 +16,10 @@ import {
   familiesToArchive,
   familiesToDelete,
   familyIds,
+  folderExpansionKey,
+  familySortKey,
+  folderOfFamily,
+  projectFolders,
   forgetKeptOpenGroups,
   forgetShownMoreOfFolded,
   isFamilyArchived,
@@ -85,9 +89,10 @@ import { DirectoryPicker } from "./DirectoryPicker";
 import { DismissButton } from "./DismissButton";
 import { FileExplorer, type FileExplorerHandle } from "./FileExplorer";
 import { PiWebTitle } from "./PiWebTitle";
+import { AppControls } from "./AppControls";
 import { ProjectWorktreePicker, type ProjectWorktreePickerHandle, type WorktreeRemoval } from "./ProjectWorktreePicker";
 import { SessionSearch } from "./SessionSearch";
-import { SessionTree, sessionRowTitle, type SessionTreeReveal } from "./SessionTree";
+import { SessionTree, sessionRowTitle, type FolderRow, type SessionDropPosition, type SessionTreeReveal } from "./SessionTree";
 import { SidebarMenu, type SidebarMenuAnchor, type SidebarMenuItem } from "./SidebarMenu";
 import { SidebarToast, type SidebarToastAction, type SidebarToastData } from "./SidebarToast";
 import {
@@ -99,6 +104,7 @@ import {
   DotOutlineIcon,
   EyeIcon,
   FolderIcon,
+  FolderPlusIcon,
   MessageIcon,
   MoreIcon,
   ForkIcon,
@@ -292,6 +298,7 @@ type SidebarMenuState =
   | { kind: "row"; row: SessionRow; anchor: SidebarMenuAnchor; opener: HTMLElement | null }
   | { kind: "group"; project: SidebarProject; olderCount: number; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: boolean }
   | { kind: "archive-group"; project: SidebarProject; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: boolean }
+  | { kind: "folder"; row: FolderRow; anchor: SidebarMenuAnchor; opener: HTMLElement }
   | { kind: "archive"; anchor: SidebarMenuAnchor; opener: HTMLElement; askDelete?: ArchiveDeleteScope };
 
 /** The archive bar's deletes: every archived session, or those archived over 30 days ago. */
@@ -597,6 +604,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // Row states that must survive virtualization live here, not in the rows.
   const [renamingRootId, setRenamingRootId] = useState<string | null>(null);
   const [renamingProjectKey, setRenamingProjectKey] = useState<string | null>(null);
+  const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null);
+  // Sessions picked with Ctrl/Cmd/Shift+click, all in one project, for a
+  // right-click on any of them to act on the lot (a new folder, a move).
+  const [multiSelect, setMultiSelect] = useState<{ projectKey: string; ids: string[]; anchor: string } | null>(null);
+  const multiSelectedIds = useMemo(() => new Set(multiSelect?.ids ?? []), [multiSelect]);
   const [confirmDeleteRootId, setConfirmDeleteRootId] = useState<string | null>(null);
   const [menu, setMenu] = useState<SidebarMenuState | null>(null);
   // A row the main tree should scroll to (a fork's new row); see
@@ -1859,6 +1871,53 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     if (request) void applyUiState(request);
   }, [applyUiState, endProjectRename]);
 
+  // Session folders ("分组") inside a project: made from the group menu
+  // (named at once in place), filled from a session's menu.
+  const folderRowButton = useCallback((folderId: string): HTMLElement | null => {
+    const key = CSS.escape(`folder:${folderId}`);
+    const button = sessionsPanelRef.current?.querySelector<HTMLElement>(`[data-row-key="${key}"] .session-tree-folder-toggle`);
+    return button && button.getClientRects().length > 0 ? button : null;
+  }, []);
+
+  const createFolder = useCallback((project: SidebarProject, ids: string[] = []) => {
+    const id = `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    // The new folder shows in an open group, its name field ready.
+    if (!isGroupExpanded(project, shownGroupExpansion)) {
+      const next = { ...groupExpansion };
+      delete next[project.key];
+      next[project.key] = true;
+      saveGroupChoices(next, [project.key]);
+    }
+    void applyUiState({ action: "create-folder", id, projectKey: project.key, name: t("sidebar.newFolderName"), ids });
+    setRenamingFolderId(id);
+  }, [applyUiState, groupExpansion, saveGroupChoices, shownGroupExpansion, t]);
+
+  const endFolderRename = useCallback((folderId: string) => {
+    setRenamingFolderId((current) => (current === folderId ? null : current));
+    focusAfterCommit(() => folderRowButton(folderId));
+  }, [focusAfterCommit, folderRowButton]);
+
+  const commitFolderRename = useCallback((folderId: string, value: string) => {
+    endFolderRename(folderId);
+    const name = value.trim();
+    const current = uiState.folders && Object.hasOwn(uiState.folders, folderId) ? uiState.folders[folderId] : undefined;
+    if (!name || !current || current.name === name) return;
+    void applyUiState({ action: "rename-folder", id: folderId, name });
+  }, [applyUiState, endFolderRename, uiState.folders]);
+
+  const handleToggleFolder = useCallback((folderId: string) => {
+    const key = folderExpansionKey(folderId);
+    const current = Object.hasOwn(groupExpansion, key) ? groupExpansion[key] : true;
+    const next = { ...groupExpansion };
+    delete next[key];
+    next[key] = !current;
+    saveGroupChoices(next, [key]);
+  }, [groupExpansion, saveGroupChoices]);
+
+  const handleFolderMenu = useCallback((row: FolderRow, opener: HTMLElement) => {
+    setMenu({ kind: "folder", row, anchor: buttonAnchor(opener, "end"), opener });
+  }, []);
+
   const performDelete = useCallback(async (family: SessionFamily) => {
     const session = family.root;
     if (session.transient) return;
@@ -2014,7 +2073,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const handleContextMenu = useCallback((row: SessionRow, event: ReactMouseEvent) => {
     const session = row.family.root;
     if (session.id === renamingRootId || session.id === confirmDeleteRootId) return;
-    if (dispatchSessionRowContextMenu({
+    const inMultiSelect = multiSelect !== null && multiSelect.ids.length > 1 && multiSelect.ids.includes(session.id);
+    // A right-click outside the picked rows drops them, as in a file manager.
+    if (!inMultiSelect && multiSelect) setMultiSelect(null);
+    if (!inMultiSelect && dispatchSessionRowContextMenu({
       id: session.id,
       path: session.path,
       cwd: session.cwd,
@@ -2041,7 +2103,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     const inRow = active instanceof HTMLElement && rowElement !== null && rowElement.contains(active);
     contextMenuFocusRef.current = !inRow && active instanceof HTMLElement && active !== document.body ? active : null;
     openRowMenu(row, anchor, inRow ? active : null);
-  }, [confirmDeleteRootId, loadSessions, openRowMenu, renamingRootId]);
+  }, [confirmDeleteRootId, loadSessions, multiSelect, openRowMenu, renamingRootId]);
 
   const treeSelectionInput = useMemo(() => ({
     sessions: allSessions,
@@ -2200,14 +2262,99 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   useEffect(() => {
     if (menu?.kind === "row" && !visibleRows.some((row) => row.key === menu.row.key)) setMenu(null);
     if (menu?.kind === "archive-group" && !visibleRows.some((row) => row.key === `archive:${menu.project.key}`)) setMenu(null);
+    if (menu?.kind === "folder" && !visibleRows.some((row) => row.key === menu.row.key)) setMenu(null);
   }, [menu, visibleRows]);
+
+  // Ctrl/Cmd+click toggles a session in the pick; Shift+click adds the run
+  // from the last one picked. The first pick starts from the open session
+  // when it is in the same project. Another project's row starts afresh.
+  const handleMultiSelect = useCallback((row: SessionRow, range: boolean) => {
+    const rootId = row.family.root.id;
+    const projectKey = row.project.key;
+    const pickable = visibleRows.filter((item): item is SessionRow => (
+      item.kind === "session" && item.context !== "archive" && !item.status.transient && item.project.key === projectKey
+    ));
+    setMultiSelect((current) => {
+      let base = current && current.projectKey === projectKey ? current : null;
+      if (!base) {
+        const open = pickable.find((item) => item.status.selected && item.family.root.id !== rootId);
+        base = open ? { projectKey, ids: [open.family.root.id], anchor: open.family.root.id } : { projectKey, ids: [], anchor: rootId };
+      }
+      if (range) {
+        const from = pickable.findIndex((item) => item.family.root.id === base.anchor);
+        const to = pickable.findIndex((item) => item.family.root.id === rootId);
+        if (from >= 0 && to >= 0) {
+          const [start, end] = from < to ? [from, to] : [to, from];
+          const ids = new Set(base.ids);
+          for (const item of pickable.slice(start, end + 1)) ids.add(item.family.root.id);
+          return { projectKey, ids: [...ids], anchor: base.anchor };
+        }
+      }
+      const ids = base.ids.includes(rootId) ? base.ids.filter((id) => id !== rootId) : [...base.ids, rootId];
+      return ids.length === 0 ? null : { projectKey, ids, anchor: rootId };
+    });
+  }, [visibleRows]);
+
+  // Escape drops the pick (a menu or a field takes its own Escape first).
+  useEffect(() => {
+    if (!multiSelect) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) setMultiSelect(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [multiSelect]);
 
   // Rows are rebuilt on every refresh; the menu acts on the current one.
   const menuRow = menu?.kind === "row"
     ? (visibleRows.find((row): row is SessionRow => row.kind === "session" && row.key === menu.row.key) ?? menu.row)
     : null;
 
+  // A drag: before or after a session puts the dragged ones in its folder (or
+  // none) with sort keys between it and its neighbour; a folder takes them in;
+  // the group header takes them out of folders. Order within keeps its keys.
+  const handleDropSessions = useCallback((ids: string[], target: SidebarRow, position: SessionDropPosition) => {
+    setMultiSelect(null);
+    if (target.kind === "folder") {
+      void applyUiState({ action: "place-sessions", ids, folderId: target.folderId });
+      return;
+    }
+    if (target.kind === "group") {
+      void applyUiState({ action: "place-sessions", ids, folderId: null });
+      return;
+    }
+    if (target.kind !== "session" || position === "into") return;
+    const folderId = target.folderId ?? null;
+    const dragged = new Set(ids);
+    const siblings = visibleRows.filter((row): row is SessionRow => (
+      row.kind === "session" && row.context === "group" && row.project.key === target.project.key
+      && (row.folderId ?? null) === folderId && !dragged.has(row.family.root.id)
+    ));
+    const index = siblings.findIndex((row) => row.key === target.key);
+    if (index < 0) return;
+    const keyOf = (row: SessionRow) => familySortKey(uiState, row.family);
+    const step = 1000;
+    const span = step * (ids.length + 1);
+    const targetKey = keyOf(target);
+    let high: number;
+    let low: number;
+    if (position === "before") {
+      const previous = siblings[index - 1];
+      high = previous ? keyOf(previous) : targetKey + span;
+      low = targetKey;
+    } else {
+      const following = siblings[index + 1];
+      high = targetKey;
+      low = following ? keyOf(following) : targetKey - span;
+    }
+    // Neighbours with the same key (never dragged, same activity time): open a gap.
+    if (!(high > low)) high = low + span;
+    const ranks = ids.map((_id, i) => high - ((i + 1) * (high - low)) / (ids.length + 1));
+    void applyUiState({ action: "place-sessions", ids, folderId, ranks });
+  }, [applyUiState, uiState, visibleRows]);
+
   const handleSelectFamily = useCallback((family: SessionFamily) => {
+    setMultiSelect(null);
     handleSelectSessionFromList(family.root);
   }, [handleSelectSessionFromList]);
 
@@ -2303,7 +2450,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     else filesPickerRef.current?.button("project")?.focus({ preventScroll: true });
   }, [filesShown, filesFocusRequest]);
 
-  const sessionMenuItems = (row: SessionRow): SidebarMenuItem[] => sessionMenuEntries(row.context, row.status).map((entry, index) => {
+  const sessionMenuItems = (row: SessionRow): SidebarMenuItem[] => [...sessionMenuEntries(row.context, row.status).map((entry, index): SidebarMenuItem => {
     if (entry.kind === "separator") return { type: "separator", id: `separator-${index}` };
     const label = t(SESSION_ACTION_LABEL_KEYS[entry.id]);
     return {
@@ -2317,7 +2464,106 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       disabledReason: entry.disabledReason === "running" ? t("sidebar.cannotArchiveRunning") : undefined,
       onSelect: ({ shiftKey }) => runSessionAction(entry.id, row, shiftKey),
     };
-  });
+  }), ...sessionFolderItems(row)];
+
+  // "Move to folder" entries: every folder of the row's project but its own,
+  // "Remove from folder" when in one, and a new folder holding it.
+  const sessionFolderItems = (row: SessionRow): SidebarMenuItem[] => {
+    if (row.context === "archive" || row.status.transient) return [];
+    const rootId = row.family.root.id;
+    const currentFolder = folderOfFamily(uiState, rootId);
+    const items: SidebarMenuItem[] = [{ type: "separator", id: "separator-folders" }];
+    for (const folder of projectFolders(uiState, row.project.key)) {
+      if (folder.id === currentFolder) continue;
+      items.push({
+        type: "item",
+        id: `move-to-folder:${folder.id}`,
+        label: t("sidebar.moveToFolder", { name: folder.name }),
+        icon: <FolderIcon />,
+        onSelect: () => { void applyUiState({ action: "move-to-folder", ids: [rootId], folderId: folder.id }); },
+      });
+    }
+    items.push({
+      type: "item",
+      id: "new-folder-with-session",
+      label: t("sidebar.newFolderWithSession"),
+      icon: <PlusIcon />,
+      onSelect: () => createFolder(row.project, [rootId]),
+    });
+    if (currentFolder !== undefined) {
+      items.push({
+        type: "item",
+        id: "remove-from-folder",
+        label: t("sidebar.removeFromFolder"),
+        icon: <RestoreIcon />,
+        onSelect: () => { void applyUiState({ action: "move-to-folder", ids: [rootId], folderId: null }); },
+      });
+    }
+    return items;
+  };
+
+  // The menu for a right-click on one of several picked sessions.
+  const multiSelectMenuItems = (row: SessionRow, ids: string[]): SidebarMenuItem[] => {
+    const done = () => setMultiSelect(null);
+    const items: SidebarMenuItem[] = [{
+      type: "item",
+      id: "new-folder-with-selection",
+      label: t("sidebar.newFolderWithSelection", { count: ids.length }),
+      icon: <FolderPlusIcon />,
+      onSelect: () => { createFolder(row.project, ids); done(); },
+    }];
+    for (const folder of projectFolders(uiState, row.project.key)) {
+      if (ids.every((id) => folderOfFamily(uiState, id) === folder.id)) continue;
+      items.push({
+        type: "item",
+        id: `move-selection-to-folder:${folder.id}`,
+        label: t("sidebar.moveToFolder", { name: folder.name }),
+        icon: <FolderIcon />,
+        onSelect: () => { void applyUiState({ action: "move-to-folder", ids, folderId: folder.id }); done(); },
+      });
+    }
+    if (ids.some((id) => folderOfFamily(uiState, id) !== undefined)) {
+      items.push({
+        type: "item",
+        id: "remove-selection-from-folder",
+        label: t("sidebar.removeFromFolder"),
+        icon: <RestoreIcon />,
+        onSelect: () => { void applyUiState({ action: "move-to-folder", ids, folderId: null }); done(); },
+      });
+    }
+    items.push(
+      { type: "separator", id: "separator-selection" },
+      { type: "item", id: "clear-selection", label: t("sidebar.clearSelection"), onSelect: done },
+    );
+    return items;
+  };
+
+  const folderMenuItems = (row: FolderRow): SidebarMenuItem[] => [
+    {
+      type: "item",
+      id: "rename-folder",
+      label: t("sidebar.renameFolder"),
+      icon: <PencilIcon />,
+      onSelect: () => setRenamingFolderId(row.folderId),
+    },
+    {
+      type: "item",
+      id: "new-session-here",
+      label: t("sidebar.newSessionInProject", { name: row.project.name }),
+      icon: <PlusIcon />,
+      onSelect: () => handleGroupNew(row.project),
+    },
+    { type: "separator", id: "separator-folder-delete" },
+    {
+      type: "item",
+      id: "delete-folder",
+      label: t("sidebar.deleteFolder"),
+      note: t("sidebar.deleteFolderNote"),
+      icon: <TrashIcon />,
+      danger: true,
+      onSelect: () => { void applyUiState({ action: "delete-folder", id: row.folderId }); },
+    },
+  ];
 
   const groupMenuItems = (project: SidebarProject, olderCount: number): SidebarMenuItem[] => {
     const archivedCount = archiveIndex.countByProject.get(project.key) ?? 0;
@@ -2349,6 +2595,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         onSelect: () => { void applyUiState({ action: "pin-project", projectKey: project.key, root: project.root, pinned: !project.pinned }); },
       },
       ...nameItems,
+      {
+        type: "item",
+        id: "new-folder",
+        label: t("sidebar.newFolder"),
+        icon: <PlusIcon />,
+        onSelect: () => createFolder(project),
+      },
       {
         type: "item",
         id: "open-in-files",
@@ -2573,9 +2826,16 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   let menuItems: SidebarMenuItem[] | undefined;
   let menuBody: ReactNode = null;
   if (menu?.kind === "row" && menuRow) {
-    menuTitle = sessionRowTitle(menuRow.family.root);
-    menuLabel = t("sidebar.sessionActions");
-    menuItems = sessionMenuItems(menuRow);
+    const picked = multiSelect && multiSelect.ids.length > 1 && multiSelect.ids.includes(menuRow.family.root.id) ? multiSelect.ids : null;
+    if (picked) {
+      menuTitle = t("sidebar.selectedSessions", { count: picked.length });
+      menuLabel = menuTitle;
+      menuItems = multiSelectMenuItems(menuRow, picked);
+    } else {
+      menuTitle = sessionRowTitle(menuRow.family.root);
+      menuLabel = t("sidebar.sessionActions");
+      menuItems = sessionMenuItems(menuRow);
+    }
   } else if (menu?.kind === "group") {
     // The project as the tree has it now: pinned, unpinned, renamed or moved in another window while the menu is open.
     const project = projectByKey.get(menu.project.key) ?? menu.project;
@@ -2591,6 +2851,12 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     menuItems = archiveGroupMenuItems(project);
     if (menu.askDelete) menuBody = archiveDeleteBody({ projectKey: project.key }, project);
     menuWidth = 248;
+  } else if (menu?.kind === "folder") {
+    const row = visibleRows.find((item): item is FolderRow => item.kind === "folder" && item.key === menu.row.key) ?? menu.row;
+    menuTitle = row.name;
+    menuLabel = t("sidebar.folderActions", { name: row.name });
+    menuItems = folderMenuItems(row);
+    menuWidth = 248;
   } else if (menu?.kind === "archive") {
     menuTitle = t("sidebar.archived");
     menuLabel = t("sidebar.archiveActions");
@@ -2603,6 +2869,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const activeMenuRowKey = menu?.kind === "row"
     ? menu.row.key
     : menu?.kind === "group" ? `group:${menu.project.key}`
+    : menu?.kind === "folder" ? menu.row.key
     : menu?.kind === "archive-group" ? `archive:${menu.project.key}` : null;
 
   const treeLayout = isMobile ? "mobile" : "desktop";
@@ -2614,6 +2881,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     error,
     renamingRootId,
     renamingProjectKey,
+    renamingFolderId,
+    multiSelectedIds,
+    onMultiSelect: handleMultiSelect,
+    onDropSessions: handleDropSessions,
     confirmDeleteRootId,
     activeMenuRowKey,
     onSelectFamily: handleSelectFamily,
@@ -2638,6 +2909,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     },
     onGroupNew: handleGroupNew,
     onGroupMenu: handleGroupMenu,
+    onToggleFolder: handleToggleFolder,
+    onFolderMenu: handleFolderMenu,
+    onRenameFolderCommit: commitFolderRename,
+    onRenameFolderCancel: () => { if (renamingFolderId) endFolderRename(renamingFolderId); },
     onToggleArchiveGroup: handleToggleArchiveGroup,
     onArchiveGroupMenu: handleArchiveGroupMenu,
     onOpenOtherProject: handleOpenOtherProject,
@@ -2847,6 +3122,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
           </div>
         )}
         <span className="sidebar-header-spacer" />
+        <AppControls notify={showToast} />
         <button
           type="button"
           className="sidebar-new-button"

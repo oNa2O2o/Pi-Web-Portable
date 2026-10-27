@@ -736,6 +736,78 @@ a.session-tree-main {
   color: var(--text);
 }
 
+/* A session folder ("分组") inside a project: its chevron in the titles'
+   column, its sessions one step further in. */
+.session-tree-folder {
+  right: var(--session-tree-inset-right);
+  left: var(--session-tree-inset-left);
+  gap: 2px;
+  padding: 0 4px 0 0;
+  border-radius: 7px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.session-tree-folder:hover {
+  background: var(--bg-hover);
+}
+
+.session-tree-folder.is-renaming {
+  padding-left: 16px;
+}
+
+.session-tree-folder-toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  height: 100%;
+  padding: 0 0 0 16px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.session-tree-folder:hover .session-tree-folder-toggle {
+  color: var(--text);
+}
+
+.session-tree-folder-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.session-tree-folder-count {
+  flex: none;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 400;
+}
+
+.session-tree-folder:hover .session-tree-group-actions,
+.session-tree-folder.is-active .session-tree-group-actions,
+.session-tree-folder:has(:focus-visible) .session-tree-group-actions {
+  display: flex;
+}
+
+.session-tree-folder:hover .session-tree-summary,
+.session-tree-folder.is-active .session-tree-summary {
+  display: none;
+}
+
+.session-tree-session.is-in-folder {
+  padding-left: 34px;
+}
+
+.session-tree.is-mobile .session-tree-folder .session-tree-group-actions {
+  display: flex;
+}
+
 /* In the text column, with the session titles. */
 .session-tree-group-empty,
 .session-tree-more {
@@ -1631,4 +1703,69 @@ a.session-tree-main {
   .sidebar-archive-view.is-leaving {
     animation: none;
   }
+}
+
+/* Picked with Ctrl/Cmd/Shift+click: framed in the accent, so the pick reads
+   apart from the open session's own highlight. */
+.session-tree-session.is-multi-selected {
+  background: var(--bg-selected);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* A session dragged onto a folder or a project header: the row it goes into. */
+.session-tree-drop-into {
+  position: absolute;
+  right: var(--session-tree-inset-right);
+  left: var(--session-tree-inset-left);
+  border-radius: 6px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  pointer-events: none;
+}
+
+.session-tree-session[draggable="true"] {
+  -webkit-user-drag: element;
+}
+
+/* The header's Restart and portable update keys (components/AppControls.tsx). */
+.sidebar-search-toggle.sidebar-app-control {
+  position: relative;
+  width: 30px;
+}
+
+.sidebar-app-control:disabled {
+  cursor: progress;
+}
+
+.sidebar-app-control.has-update {
+  color: var(--accent);
+}
+
+.sidebar-app-control-badge {
+  position: absolute;
+  top: 7px;
+  right: 5px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 0 1.5px var(--bg-sidebar, var(--bg));
+  pointer-events: none;
+}
+
+.app-control-spin {
+  animation: app-control-spin 0.9s linear infinite;
+}
+
+.app-control-pulse {
+  animation: app-control-pulse 0.8s ease-in-out infinite alternate;
+}
+
+@keyframes app-control-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes app-control-pulse {
+  from { opacity: 1; }
+  to { opacity: 0.35; }
 }

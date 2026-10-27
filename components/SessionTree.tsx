@@ -11,6 +11,7 @@ import {
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type DragEvent as ReactDragEvent,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -101,6 +102,10 @@ export interface SessionTreeProps {
   renamingRootId: string | null;
   /** The project whose group header is a name field (its menu's Rename…). */
   renamingProjectKey: string | null;
+  /** The session folder whose row is a name field. */
+  renamingFolderId?: string | null;
+  /** Root ids picked with Ctrl/Cmd/Shift+click, for actions on several sessions at once. */
+  multiSelectedIds?: ReadonlySet<string>;
   confirmDeleteRootId: string | null;
   /** Row whose menu is open: kept mounted, its ⋯ shown pressed. A group row's key works too. */
   activeMenuRowKey: string | null;
@@ -128,6 +133,19 @@ export interface SessionTreeProps {
   /** A group's "+": a new session in that project at once. */
   onGroupNew(project: SidebarProject): void;
   onGroupMenu(project: SidebarProject, opener: HTMLElement): void;
+  /** A session folder's toggle. */
+  onToggleFolder?(folderId: string): void;
+  /** Ctrl/Cmd+click toggles a row in the multi-selection; Shift+click extends it. */
+  onMultiSelect?(row: SessionRow, range: boolean): void;
+  /**
+   * Sessions dragged onto a row of their project: before or after a session
+   * (its folder, that place), into a folder, or onto the group header (out of folders).
+   */
+  onDropSessions?(ids: string[], target: SidebarRow, position: SessionDropPosition): void;
+  /** A session folder's ⋯: Rename…, Delete folder. */
+  onFolderMenu?(row: FolderRow, opener: HTMLElement): void;
+  onRenameFolderCommit?(folderId: string, value: string): void;
+  onRenameFolderCancel?(): void;
   /** An archive header's toggle; `all` (Alt+click): every archive group follows this one. */
   onToggleArchiveGroup?(projectKey: string, all: boolean): void;
   /** An archive header's ⋯: Restore all, Delete…. */
@@ -176,6 +194,8 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     error,
     renamingRootId,
     renamingProjectKey,
+    renamingFolderId = null,
+    multiSelectedIds,
     confirmDeleteRootId,
     activeMenuRowKey,
     reveal,
@@ -258,6 +278,79 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
   }, []);
 
   const offsets = useMemo(() => getRowOffsets(rows, layout), [rows, layout]);
+
+  // Sessions are dragged with the browser's own drag and drop (desktop):
+  // handled once on the inner box, by the row under the pointer.
+  const sessionDraggable = Boolean(props.onDropSessions) && layout === "desktop";
+  const sessionDragRef = useRef<{ ids: string[]; projectKey: string } | null>(null);
+  const [sessionDrop, setSessionDrop] = useState<{ key: string; position: SessionDropPosition } | null>(null);
+  const rowIndexByKey = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows]);
+  const dragRowAt = (event: ReactDragEvent): { row: SidebarRow; element: Element } | null => {
+    const element = event.target instanceof Element ? event.target.closest("[data-row-key]") : null;
+    const index = element ? rowIndexByKey.get(element.getAttribute("data-row-key") ?? "") : undefined;
+    return element && index !== undefined ? { row: rows[index], element } : null;
+  };
+  const handleSessionDragStart = (event: ReactDragEvent) => {
+    sessionDragRef.current = null;
+    const hit = dragRowAt(event);
+    if (!sessionDraggable || !hit) return;
+    const { row } = hit;
+    if (row.kind !== "session" || row.context !== "group" || row.status.transient) return;
+    const id = row.family.root.id;
+    // A picked session takes the whole pick (in tree order) along.
+    const ids = multiSelectedIds && multiSelectedIds.size > 1 && multiSelectedIds.has(id)
+      ? rows
+        .filter((item): item is SessionRow => item.kind === "session" && item.context === "group"
+          && item.project.key === row.project.key && multiSelectedIds.has(item.family.root.id))
+        .map((item) => item.family.root.id)
+      : [id];
+    sessionDragRef.current = { ids, projectKey: row.project.key };
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("application/x-pi-web-sessions", ids.join(","));
+  };
+  const sessionDropTarget = (event: ReactDragEvent): { row: SidebarRow; position: SessionDropPosition } | null => {
+    const drag = sessionDragRef.current;
+    const hit = drag ? dragRowAt(event) : null;
+    if (!drag || !hit) return null;
+    const { row, element } = hit;
+    if (row.kind === "session") {
+      if (row.context !== "group" || row.project.key !== drag.projectKey || drag.ids.includes(row.family.root.id)) return null;
+      const rect = element.getBoundingClientRect();
+      return { row, position: event.clientY < rect.top + rect.height / 2 ? "before" : "after" };
+    }
+    if ((row.kind === "folder" || row.kind === "group") && row.project.key === drag.projectKey) return { row, position: "into" };
+    return null;
+  };
+  const handleSessionDragOver = (event: ReactDragEvent) => {
+    if (!sessionDragRef.current) return;
+    const target = sessionDropTarget(event);
+    if (!target) {
+      if (sessionDrop) setSessionDrop(null);
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (sessionDrop?.key !== target.row.key || sessionDrop.position !== target.position) {
+      setSessionDrop({ key: target.row.key, position: target.position });
+    }
+  };
+  const handleSessionDrop = (event: ReactDragEvent) => {
+    const drag = sessionDragRef.current;
+    const target = sessionDropTarget(event);
+    sessionDragRef.current = null;
+    setSessionDrop(null);
+    if (!drag || !target) return;
+    event.preventDefault();
+    handlersRef.current.onDropSessions?.(drag.ids, target.row, target.position);
+  };
+  const handleSessionDragEnd = () => {
+    sessionDragRef.current = null;
+    setSessionDrop(null);
+  };
+  const handleSessionDragLeave = (event: ReactDragEvent) => {
+    if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setSessionDrop(null);
+  };
+  const sessionDropIndex = sessionDrop ? rowIndexByKey.get(sessionDrop.key) : undefined;
   // A group header can be dragged to another place in its band (pinned
   // projects, or the others) when the band has another group.
   const canMoveGroups = Boolean(props.onMoveGroup);
@@ -293,9 +386,10 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
       if (row.key === focusedRowKey || row.key === activeMenuRowKey || row.key === pendingRevealKey || row.key === draggedRowKey) indices.push(index);
       else if (row.kind === "session" && (row.family.root.id === renamingRootId || row.family.root.id === confirmDeleteRootId)) indices.push(index);
       else if (row.kind === "group" && row.project.key === renamingProjectKey) indices.push(index);
+      else if (row.kind === "folder" && row.folderId === renamingFolderId) indices.push(index);
     });
     return indices;
-  }, [rows, focusedRowKey, activeMenuRowKey, pendingRevealKey, draggedRowKey, renamingRootId, renamingProjectKey, confirmDeleteRootId]);
+  }, [rows, focusedRowKey, activeMenuRowKey, pendingRevealKey, draggedRowKey, renamingRootId, renamingProjectKey, renamingFolderId, confirmDeleteRootId]);
   const visibleIndices = useMemo(
     () => (loading ? [] : getVisibleRowIndices(offsets, scrollTop, viewportHeight, OVERSCAN_PX, keepMounted)),
     [loading, offsets, scrollTop, viewportHeight, keepMounted],
@@ -419,7 +513,16 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
         onClickCapture={groupDrag.onClickCapture}
       >
         {!loading && (
-          <div ref={innerRef} className="session-tree-inner" style={{ height: offsets[rows.length] }}>
+          <div
+            ref={innerRef}
+            className="session-tree-inner"
+            style={{ height: offsets[rows.length] }}
+            onDragStart={handleSessionDragStart}
+            onDragOver={handleSessionDragOver}
+            onDrop={handleSessionDrop}
+            onDragEnd={handleSessionDragEnd}
+            onDragLeave={handleSessionDragLeave}
+          >
             {visibleIndices.map((index) => {
               const row = rows[index];
               if (row.kind === "spacer") return null;
@@ -438,6 +541,8 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
                     renaming={row.family.root.id === renamingRootId}
                     confirming={row.family.root.id === confirmDeleteRootId}
                     menuOpen={menuOpen}
+                    multiSelected={multiSelectedIds?.has(row.family.root.id) ?? false}
+                    draggable={sessionDraggable && row.context === "group" && !row.status.transient}
                     handlers={handlersRef}
                   />
                 );
@@ -463,6 +568,19 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
                   />
                 );
               }
+              if (row.kind === "folder") {
+                return (
+                  <FolderRowView
+                    key={row.key}
+                    row={row}
+                    top={top}
+                    height={height}
+                    menuOpen={menuOpen}
+                    renaming={row.folderId === renamingFolderId}
+                    handlers={handlersRef}
+                  />
+                );
+              }
               return <PlainRowView key={row.key} row={row} top={top} height={height} handlers={handlersRef} onMoreAction={handleMoreAction} />;
             })}
             {dragSource && (
@@ -473,6 +591,19 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
               />
             )}
             {dropLineY !== null && <div className="session-tree-drop-line" aria-hidden="true" style={{ top: dropLineY }} />}
+            {sessionDrop && sessionDropIndex !== undefined && (sessionDrop.position === "into" ? (
+              <div
+                className="session-tree-drop-into"
+                aria-hidden="true"
+                style={{ top: offsets[sessionDropIndex], height: offsets[sessionDropIndex + 1] - offsets[sessionDropIndex] }}
+              />
+            ) : (
+              <div
+                className="session-tree-drop-line"
+                aria-hidden="true"
+                style={{ top: offsets[sessionDrop.position === "before" ? sessionDropIndex : sessionDropIndex + 1] }}
+              />
+            ))}
           </div>
         )}
       </div>
@@ -487,6 +618,20 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
 
 type Handlers = RefObject<SessionTreeProps>;
 
+export type SessionDropPosition = "before" | "after" | "into";
+
+/** Ctrl/Cmd/Shift+primary click picks rows instead of opening them (middle-click still opens a tab). */
+function multiSelectClick(event: ReactMouseEvent, row: SessionRow, handlers: Handlers): boolean {
+  const onMultiSelect = handlers.current.onMultiSelect;
+  if (!onMultiSelect || event.button !== 0 || event.altKey) return false;
+  if (!event.ctrlKey && !event.metaKey && !event.shiftKey) return false;
+  if (row.status.transient || row.context === "archive") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  onMultiSelect(row, event.shiftKey);
+  return true;
+}
+
 function rowStyle(top: number, height: number) {
   return { top, height };
 }
@@ -500,9 +645,14 @@ const SessionRowView = memo(function SessionRowView({
   renaming,
   confirming,
   menuOpen,
+  multiSelected,
+  draggable,
   handlers,
 }: {
   row: SessionRow;
+  multiSelected: boolean;
+  /** Can be dragged to another place, folder or out of one. */
+  draggable: boolean;
   layout: SidebarLayout;
   top: number;
   height: number;
@@ -519,7 +669,9 @@ const SessionRowView = memo(function SessionRowView({
   const nowDate = new Date(now);
   const className = [
     "session-tree-row session-tree-session",
+    row.folderId ? "is-in-folder" : "",
     status.selected ? "is-selected" : "",
+    multiSelected ? "is-multi-selected" : "",
     status.running ? "is-running" : "",
     context === "archive" ? "is-archived" : "",
     menuOpen ? "is-menu-open" : "",
@@ -637,7 +789,11 @@ const SessionRowView = memo(function SessionRowView({
       className={className}
       style={rowStyle(top, height)}
       data-row-key={row.key}
-      onClick={() => handlers.current.onSelectFamily(family)}
+      draggable={draggable || undefined}
+      onClick={(event) => {
+        if (multiSelectClick(event, row, handlers)) return;
+        handlers.current.onSelectFamily(family);
+      }}
       onContextMenu={(event) => handlers.current.onRowContextMenu(row, event)}
     >
       {status.transient ? (
@@ -653,11 +809,13 @@ const SessionRowView = memo(function SessionRowView({
         <a
           className="session-tree-main"
           href={sessionDeepLink(root.id)}
+          draggable={draggable ? false : undefined}
           title={tooltip}
           aria-current={status.selected ? "true" : undefined}
           onClick={(event) => {
             // The row's handler must not select it again, nor on a modified click.
             event.stopPropagation();
+            if (multiSelectClick(event, row, handlers)) return;
             if (!isPlainActivation(event)) return;
             event.preventDefault();
             handlers.current.onSelectFamily(family);
@@ -963,6 +1121,76 @@ const GroupRowView = memo(function GroupRowView({
   );
 });
 
+export type FolderRow = Extract<SidebarRow, { kind: "folder" }>;
+
+/** A session folder ("分组") inside a project group: chevron, name, count, ⋯. */
+const FolderRowView = memo(function FolderRowView({
+  row,
+  top,
+  height,
+  menuOpen,
+  renaming,
+  handlers,
+}: {
+  row: FolderRow;
+  top: number;
+  height: number;
+  menuOpen: boolean;
+  renaming: boolean;
+  handlers: Handlers;
+}) {
+  const { t } = useI18n();
+  const className = [
+    "session-tree-row session-tree-folder",
+    menuOpen ? "is-active" : "",
+  ].filter(Boolean).join(" ");
+  if (renaming) {
+    return (
+      <div className={`${className} is-renaming`} style={rowStyle(top, height)} data-row-key={row.key}>
+        <RenameInput
+          initialValue={row.name}
+          label={t("sidebar.folderName")}
+          maxLength={MAX_PROJECT_NAME_LENGTH}
+          onCommit={(value) => handlers.current.onRenameFolderCommit?.(row.folderId, value)}
+          onCancel={() => handlers.current.onRenameFolderCancel?.()}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className={className} style={rowStyle(top, height)} data-row-key={row.key}>
+      <button
+        type="button"
+        className="session-tree-folder-toggle"
+        aria-expanded={row.expanded}
+        title={row.name}
+        onClick={() => handlers.current.onToggleFolder?.(row.folderId)}
+      >
+        <ChevronIcon size={11} strokeWidth={3} className={`session-tree-chevron${row.expanded ? " is-open" : ""}`} />
+        <span className="session-tree-folder-name">{row.name}</span>
+        <span className="session-tree-folder-count">{row.count}</span>
+        {!row.expanded && <ActivitySummary running={row.running} unread={row.unread} t={t} />}
+      </button>
+      <span className="session-tree-group-actions">
+        <button
+          type="button"
+          className={`session-tree-group-action${menuOpen ? " is-active" : ""}`}
+          aria-label={t("sidebar.folderActions", { name: row.name })}
+          title={t("sidebar.folderActions", { name: row.name })}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          onClick={(event) => {
+            event.stopPropagation();
+            handlers.current.onFolderMenu?.(row, event.currentTarget);
+          }}
+        >
+          <MoreIcon size={13} />
+        </button>
+      </span>
+    </div>
+  );
+});
+
 /** The rows with at most one control: section headers, "show more", footer links. */
 const PlainRowView = memo(function PlainRowView({
   row,
@@ -971,7 +1199,7 @@ const PlainRowView = memo(function PlainRowView({
   handlers,
   onMoreAction,
 }: {
-  row: Exclude<SidebarRow, { kind: "session" | "group" | "archive-group" | "spacer" }>;
+  row: Exclude<SidebarRow, { kind: "session" | "group" | "archive-group" | "spacer" | "folder" }>;
   top: number;
   height: number;
   handlers: Handlers;

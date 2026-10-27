@@ -25,7 +25,7 @@ import { workspaceKeyOf } from "./workspace-memory";
 export type SidebarLayout = "desktop" | "mobile";
 export type SidebarRowKind =
   | "pinned-header" | "session" | "pinned-more" | "group" | "group-more" | "group-empty"
-  | "spacer" | "footer-open" | "footer-archived" | "archive-group";
+  | "spacer" | "footer-open" | "footer-archived" | "archive-group" | "folder";
 
 /**
  * Per-kind row heights: one rhythm. Session rows, the section headers (a
@@ -36,8 +36,8 @@ export type SidebarRowKind =
  * footer; groups themselves sit right on each other, with none between them.
  */
 export const SIDEBAR_ROW_HEIGHTS: Record<SidebarLayout, Record<SidebarRowKind, number>> = {
-  desktop: { "pinned-header": 28, session: 28, "pinned-more": 26, group: 28, "group-more": 26, "group-empty": 28, spacer: 8, "footer-open": 28, "footer-archived": 28, "archive-group": 28 },
-  mobile: { "pinned-header": 44, session: 44, "pinned-more": 36, group: 44, "group-more": 36, "group-empty": 44, spacer: 8, "footer-open": 44, "footer-archived": 44, "archive-group": 44 },
+  desktop: { "pinned-header": 28, session: 28, "pinned-more": 26, group: 28, "group-more": 26, "group-empty": 28, spacer: 8, "footer-open": 28, "footer-archived": 28, "archive-group": 28, folder: 28 },
+  mobile: { "pinned-header": 44, session: 44, "pinned-more": 36, group: 44, "group-more": 36, "group-empty": 44, spacer: 8, "footer-open": 44, "footer-archived": 44, "archive-group": 44, folder: 44 },
 };
 export const GROUP_VISIBLE_LIMIT = 6;
 export const PINNED_VISIBLE_LIMIT = 8;
@@ -55,7 +55,9 @@ export interface SidebarFamilyStatus { running: boolean; awaiting: boolean; unre
 
 export type SidebarRow =
   | { kind: "pinned-header"; key: "pinned-header"; count: number; collapsed: boolean; running: number; unread: number }
-  | { kind: "session"; key: string; family: SessionFamily; context: "pinned" | "group" | "archive"; project: SidebarProject; status: SidebarFamilyStatus; archivedAt: number | null }
+  | { kind: "session"; key: string; family: SessionFamily; context: "pinned" | "group" | "archive"; project: SidebarProject; status: SidebarFamilyStatus; archivedAt: number | null; folderId?: string }
+  /** A user-made session folder ("分组") inside an open project group. */
+  | { kind: "folder"; key: string; folderId: string; name: string; project: SidebarProject; expanded: boolean; count: number; running: number; unread: number }
   | { kind: "pinned-more"; key: "pinned-more"; hidden: number; canShowLess: boolean; nextShown: number }
   | { kind: "group"; key: string; project: SidebarProject; expanded: boolean; running: number; unread: number }
   | { kind: "group-more"; key: string; projectKey: string; hidden: number; canShowLess: boolean; nextShown: number }
@@ -173,6 +175,49 @@ export function projectNameOf(root: string): string {
 }
 
 /** Explicit choice wins; by default the current and pinned projects are open. */
+/** The `groupExpansion` key of a session folder's open/closed choice. */
+export function folderExpansionKey(folderId: string): string {
+  return `folder:${folderId}`;
+}
+
+/** A family's place in its group or folder (newest first): its dragged rank, else its last activity (ms). */
+export function familySortKey(state: SessionUiState, family: SessionFamily): number {
+  const ranks = state.sessionRanks;
+  if (ranks && Object.hasOwn(ranks, family.root.id)) {
+    const rank = ranks[family.root.id];
+    if (typeof rank === "number" && Number.isFinite(rank)) return rank;
+  }
+  const time = Date.parse(family.latestModified);
+  return Number.isFinite(time) ? time : 0;
+}
+
+/** `families` by sort key, newest first; ties keep their order. Unchanged order without any rank. */
+function sortByRank(families: SessionFamily[], state: SessionUiState): SessionFamily[] {
+  if (!state.sessionRanks) return families;
+  return families
+    .map((family, index) => ({ family, index, key: familySortKey(state, family) }))
+    .sort((a, b) => b.key - a.key || a.index - b.index)
+    .map(({ family }) => family);
+}
+
+/** The folder a family is filed in, if that folder still exists. */
+export function folderOfFamily(state: SessionUiState, rootId: string): string | undefined {
+  const folderOf = state.folderOf;
+  if (!folderOf || !Object.hasOwn(folderOf, rootId)) return undefined;
+  const folderId = folderOf[rootId];
+  return state.folders && Object.hasOwn(state.folders, folderId) ? folderId : undefined;
+}
+
+/** A project's session folders, oldest first. */
+export function projectFolders(state: SessionUiState, projectKey: string): { id: string; name: string; createdAt: number }[] {
+  const folders = state.folders;
+  if (!folders) return [];
+  return Object.entries(folders)
+    .filter(([, folder]) => folder.projectKey === projectKey)
+    .map(([id, folder]) => ({ id, name: folder.name, createdAt: folder.createdAt }))
+    .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+
 export function isGroupExpanded(project: SidebarProject, groupExpansion: Readonly<Record<string, boolean>>): boolean {
   if (Object.hasOwn(groupExpansion, project.key)) {
     const choice = groupExpansion[project.key];
@@ -510,7 +555,7 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
     .map((project) => project.key);
 
   for (const project of orderedProjects) {
-    const groupFamilies = projectFamilies.get(project.key) ?? [];
+    const groupFamilies = sortByRank(projectFamilies.get(project.key) ?? [], uiState);
     const expanded = isGroupExpanded(project, input.groupExpansion);
     let running = 0;
     let unread = 0;
@@ -521,12 +566,45 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
     rows.push({ kind: "group", key: `group:${project.key}`, project, expanded, running, unread });
 
     if (expanded) {
-      if (groupFamilies.length === 0) {
-        rows.push({ kind: "group-empty", key: `empty:${project.key}`, project });
+      const folders = projectFolders(uiState, project.key);
+      const inFolder = new Map<string, SessionFamily[]>();
+      const ungrouped: SessionFamily[] = [];
+      for (const family of groupFamilies) {
+        const folderId = folderOfFamily(uiState, family.root.id);
+        const members = folderId === undefined ? undefined : inFolder.get(folderId);
+        if (members) members.push(family);
+        else if (folderId !== undefined && folders.some((folder) => folder.id === folderId)) inFolder.set(folderId, [family]);
+        else ungrouped.push(family);
+      }
+      for (const folder of folders) {
+        const members = inFolder.get(folder.id) ?? [];
+        const key = folderExpansionKey(folder.id);
+        const choice = Object.hasOwn(input.groupExpansion, key) ? input.groupExpansion[key] : undefined;
+        const folderExpanded = typeof choice === "boolean" ? choice : true;
+        let folderRunning = 0;
+        let folderUnread = 0;
+        for (const family of members) {
+          if (anyMemberIn(family, runningIds)) folderRunning++;
+          if (anyMemberIn(family, input.unreadIds)) folderUnread++;
+        }
+        rows.push({
+          kind: "folder", key: `folder:${folder.id}`, folderId: folder.id, name: folder.name, project,
+          expanded: folderExpanded, count: members.length, running: folderRunning, unread: folderUnread,
+        });
+        if (folderExpanded) {
+          for (const family of members) {
+            const row = sessionRow(family, "group", project, input, null);
+            if (row.kind === "session") row.folderId = folder.id;
+            rows.push(row);
+          }
+        }
+      }
+      if (ungrouped.length === 0) {
+        if (folders.length === 0) rows.push({ kind: "group-empty", key: `empty:${project.key}`, project });
       } else {
-        const { visible, revealed, nextShown } = visibleFamilies(groupFamilies, GROUP_VISIBLE_LIMIT, shownMoreFor(input.moreShown, project.key), input);
+        const { visible, revealed, nextShown } = visibleFamilies(ungrouped, GROUP_VISIBLE_LIMIT, shownMoreFor(input.moreShown, project.key), input);
         for (const family of visible) rows.push(sessionRow(family, "group", project, input, null));
-        const more = moreRowState(groupFamilies.length, visible.length, revealed);
+        const more = moreRowState(ungrouped.length, visible.length, revealed);
         if (more) rows.push({ kind: "group-more", key: `more:${project.key}`, projectKey: project.key, ...more, nextShown });
       }
     }
@@ -699,7 +777,7 @@ export interface GroupBlock { key: string; pinned: boolean; top: number; bottom:
 
 /** A row that belongs to the group above it. */
 function isGroupMemberRow(row: SidebarRow): boolean {
-  return row.kind === "group-more" || row.kind === "group-empty" || (row.kind === "session" && row.context === "group");
+  return row.kind === "group-more" || row.kind === "group-empty" || row.kind === "folder" || (row.kind === "session" && row.context === "group");
 }
 
 /** The group blocks of `rows`, top to bottom. */
