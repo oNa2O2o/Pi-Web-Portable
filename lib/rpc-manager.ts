@@ -4,6 +4,7 @@ import { KeybindingsManager as TuiKeybindingsManager, TUI_KEYBINDINGS } from "@e
 import { randomUUID } from "crypto";
 import { existsSync, realpathSync, writeFileSync } from "fs";
 import { resolve } from "path";
+import { isDeepStrictEqual } from "util";
 import { validateAgentImages } from "./image-attachments";
 import { invalidateModelsCache } from "./models-cache";
 import { invalidateModelRuntimeWithExtensions } from "./model-runtime";
@@ -16,6 +17,7 @@ import {
   preferUserBashExtension,
 } from "./project-command-env";
 import { cacheSessionPath, catalogFirstMessage, getLatestModelChange, invalidateSessionListCache, readLatestSessionEntryId, resolveSessionPath } from "./session-reader";
+import { computeLiveSessionTotalActiveMs } from "./session-timing";
 import { getProjectTrustStatus, projectTrustReloadOptions } from "./project-trust";
 import { notifySessionComplete } from "./web-push";
 import { hasActiveSessionLivenessProvider } from "./session-liveness";
@@ -206,6 +208,9 @@ export function resolveSessionShutdownDeadlineMs(
 }
 
 const SESSION_SHUTDOWN_DEADLINE_MS = resolveSessionShutdownDeadlineMs();
+
+/** Bounds `set_model`'s offline provider refresh, as pi's model selector bounds its own. */
+const MODEL_REFRESH_TIMEOUT_MS = 15_000;
 
 const SESSION_REPLACEMENT_COMMAND_TYPES = new Set(["fork", "clone"]);
 // pi writes a session file at the first user message, so a session with no
@@ -1079,6 +1084,11 @@ export class AgentSessionWrapper {
           contextUsage: contextUsage
             ? { percent: contextUsage.percent, contextWindow: contextUsage.contextWindow, tokens: contextUsage.tokens }
             : null,
+          // Computed from the live entries on every read, like `GET /api/sessions/[id]`
+          // does for a snapshot: the SDK's stats carry no active time, and a panel that
+          // kept a snapshot while messages streamed in showed the pre-gap value for the
+          // rest of the run, however long it lasted (#1334).
+          totalActiveMs: computeLiveSessionTotalActiveMs(this.inner.sessionManager),
           // An exact prompt is projected onto each run by the inline extension. Every other
           // session reports `agent.state.systemPrompt`, which replays the transcript: that is
           // what the model actually saw, including sections a `before_agent_start` handler
@@ -1095,17 +1105,28 @@ export class AgentSessionWrapper {
 
       case "set_model": {
         const { provider, modelId } = command as { provider: string; modelId: string };
-        // models.json can change without changing the provider/model id. Always
-        // refresh before resolving so baseUrl, headers, api compatibility, and
-        // other runtime fields come from the latest saved configuration.
-        await this.inner.modelRuntime.refresh({ allowNetwork: false });
+        // As pi's /model, which refreshes before listing: re-read models.json even for a known id,
+        // so reselecting a model applies a saved edit of it (#1273). Like the TUI, a failed or
+        // timed-out refresh leaves the cached definitions in use.
+        await this.inner.modelRuntime.refresh({
+          allowNetwork: false,
+          providers: [provider],
+          signal: AbortSignal.timeout(MODEL_REFRESH_TIMEOUT_MS),
+        }).catch(() => undefined);
         const model = this.inner.modelRuntime.getModel(provider, modelId);
         if (!model) {
           throw this.chatOnly && findDeferredModel(this.inner.modelRuntime as ModelRuntime, provider, modelId)
             ? chatOnlyExtensionModelError(provider, modelId)
             : new Error(`Model not found: ${provider}/${modelId}`);
         }
+        const previous = this.inner.model;
+        // Reselecting an unchanged model writes nothing.
+        if (isDeepStrictEqual(previous, model)) return { id: model.id, provider: model.provider };
+        const sameId = previous?.provider === model.provider && previous.id === model.id;
+        const thinkingLevel = this.inner.agent.state?.thinkingLevel;
         await this.inner.setModel(model);
+        // A reselect to apply an edit is not a new model choice: keep the level (clamped by the SDK).
+        if (sameId && thinkingLevel) this.inner.setThinkingLevel(thinkingLevel);
         invalidateModelsCache();
         invalidateSessionListCache();
         return { id: model.id, provider: model.provider };
@@ -2297,6 +2318,11 @@ function trackStartingSession(cwd: string): () => void {
 
 export function getRpcSession(sessionId: string): AgentSessionWrapper | undefined {
   const session = getRegistry().get(sessionId);
+  // Test doubles and other registry entries that are not session wrappers
+  // carry no liveness or model-config state: hand them back unchanged.
+  if (session && (typeof session.isAlive !== "function" || typeof session.destroy !== "function")) {
+    return session;
+  }
   if (!session?.isAlive()) return undefined;
   if (!usesCurrentModelConfig(session) && !session.isRunning()) {
     session.destroy();
