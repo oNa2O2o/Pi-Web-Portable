@@ -75,6 +75,7 @@ export default function RootLayout({
             __html: `(function(){try{if(!localStorage.getItem("pi-locale"))localStorage.setItem("pi-locale","zh-CN")}catch(e){}})();`,
           }}
         />
+        <script defer src="/pi-clipboard.js" />
       </head>
       <body translate="no" className="notranslate" suppressHydrationWarning>
         {children}
