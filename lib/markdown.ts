@@ -475,11 +475,19 @@ function splitAutolinkLiteral(
   if (source.slice(start.offset, end.offset) !== textNode.value) return;
 
   const text = textNode.value;
-  const cut = text.search(cjkPunctuationPattern);
+  let cut = text.search(cjkPunctuationPattern);
   // `cut === 0` means the literal itself starts with punctuation — not a URL.
   if (cut <= 0 || !node.url.endsWith(text)) return;
 
-  const head = text.slice(0, cut);
+  // `**https://a.com**，见这里`: the closing emphasis marker sits between the URL
+  // and the CJK punctuation, so GFM swallowed it into the literal and never
+  // closed the emphasis. Leave the marker run out of the link; the emphasis is
+  // rebuilt by `restoreEmphasisAroundLinks` once every literal is split.
+  let head = text.slice(0, cut);
+  head = head.replace(/[*_~]+$/, "");
+  if (!head) return;
+  if (head.length < cut) linksWithStrippedMarker.add(node);
+  cut = head.length;
   const boundary = { line: start.line, column: start.column + cut, offset: start.offset + cut };
   // The url carries a `http://` (www.) or `mailto:` prefix the text does not.
   node.url = node.url.slice(0, node.url.length - text.length) + head;
@@ -492,9 +500,66 @@ function splitAutolinkLiteral(
   });
 }
 
+const linksWithStrippedMarker = new WeakSet<Link>();
+
+const emphasisMarkerTypes: Record<string, "strong" | "emphasis" | "delete"> = {
+  "**": "strong",
+  __: "strong",
+  "*": "emphasis",
+  _: "emphasis",
+  "~~": "delete",
+};
+
+/**
+ * After `splitAutolinkLiteralsAtCjkPunctuation`, `**输出：https://a.com**。` is
+ * left as text `**输出：`, link, text `**。`. Re-pair the literal marker runs
+ * into a real strong/emphasis/delete node so neither `**` is shown and the
+ * link stays clickable.
+ */
+export function restoreEmphasisAroundLinks(tree: Root): void {
+  const walk = (node: Root | Parent): void => {
+    const children = node.children as Content[];
+    for (let index = 0; index < children.length; index++) {
+      const current = children[index];
+      if ("children" in current && Array.isArray(current.children)) walk(current as Parent);
+    }
+    for (let index = 0; index < children.length; index++) {
+      const link = children[index];
+      const after = children[index + 1];
+      if (link.type !== "link" || after?.type !== "text" || !linksWithStrippedMarker.has(link)) continue;
+      const closing = /^(\*\*|__|~~|\*|_)/.exec(after.value)?.[1];
+      if (!closing) continue;
+      // Nearest preceding text node holding the opening run of the same marker.
+      for (let open = index - 1; open >= 0; open--) {
+        const candidate = children[open];
+        if (candidate.type !== "text") continue;
+        const at = candidate.value.lastIndexOf(closing);
+        if (at < 0) continue;
+        const inner = candidate.value.slice(at + closing.length);
+        // The opening run must be left-flanking: not followed by whitespace.
+        if (/^\s/.test(inner)) break;
+        const wrapped: Content[] = [];
+        if (inner) wrapped.push({ type: "text", value: inner });
+        wrapped.push(...children.slice(open + 1, index + 1));
+        const replacement: Content[] = [];
+        const before = candidate.value.slice(0, at);
+        if (before) replacement.push({ type: "text", value: before });
+        replacement.push({ type: emphasisMarkerTypes[closing], children: wrapped } as Content);
+        const rest = after.value.slice(closing.length);
+        if (rest) replacement.push({ type: "text", value: rest });
+        children.splice(open, index - open + 2, ...replacement);
+        index = open;
+        break;
+      }
+    }
+  };
+  walk(tree);
+}
+
 function remarkSplitAutolinkLiterals() {
   return (tree: Root, file: { value?: unknown }): void => {
     splitAutolinkLiteralsAtCjkPunctuation(tree, typeof file.value === "string" ? file.value : "");
+    restoreEmphasisAroundLinks(tree);
   };
 }
 
