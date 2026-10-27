@@ -271,6 +271,7 @@ internal static class Program
             StandardOutputEncoding = Encoding.UTF8,
             StandardErrorEncoding = Encoding.UTF8,
         };
+        ConfigurePlugins(info);
 
         var child = Process.Start(info);
         if (child == null) throw new InvalidOperationException("Could not start the bundled Node.js process.");
@@ -294,6 +295,23 @@ internal static class Program
         TryDelete(pidPath);
         Log("Pi Web process exited with code " + child.ExitCode + ".");
         return child.ExitCode;
+    }
+
+    // Optional browser plugins (app\plugins, e.g. long-press voice input) are loaded by
+    // preloading the plugin loader into the Pi Web server process. Missing plugins are not an error.
+    private static void ConfigurePlugins(ProcessStartInfo info)
+    {
+        var loader = Path.Combine(AppRoot, "plugins", "piweb-plugin-loader.cjs");
+        if (!File.Exists(loader)) return;
+        var existing = info.EnvironmentVariables["NODE_OPTIONS"] ?? "";
+        if (existing.IndexOf("piweb-plugin-loader", StringComparison.OrdinalIgnoreCase) < 0)
+        {
+            // Node treats backslashes in NODE_OPTIONS as escapes, so pass a forward-slash path.
+            var option = "--require \"" + loader.Replace('\\', '/') + "\"";
+            info.EnvironmentVariables["NODE_OPTIONS"] = (existing + " " + option).Trim();
+        }
+        info.EnvironmentVariables["PIWEB_PLUGIN_LOG_DIR"] = LogsRoot;
+        Log("Browser plugins enabled: " + loader);
     }
 
     private static bool WaitForHealth(Process child, string url, int seconds)

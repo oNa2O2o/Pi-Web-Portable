@@ -108,7 +108,7 @@ try {
   if ($recordedPid -ne [string]$oldServer.Id) { throw "Old server PID changed before installation: $recordedPid" }
 
   $installer = Start-Process -FilePath $helper `
-    -ArgumentList ('--apply-update --target "{0}" --archive "{1}"' -f $target, $download) `
+    -ArgumentList ('--apply-update --target "{0}" --archive "{1}" --port {2} --non-interactive' -f $target, $download, $Port) `
     -WindowStyle Hidden -PassThru
   if (-not $installer.WaitForExit(300000)) { throw "Original updater did not finish installation." }
   if ($installer.ExitCode -ne 0) { throw "Original updater installation failed: $($installer.ExitCode)" }

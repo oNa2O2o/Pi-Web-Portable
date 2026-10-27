@@ -44,7 +44,7 @@
     "start:lan": "next start -H 0.0.0.0 -p 30141",
     "test:pi-retry": "node --test scripts/patch-pi-retry.test.mjs",
     "test:anthropic-tool-ids": "node --test lib/anthropic-tool-ids.test.mjs lib/anthropic-tool-ids.integration.test.mjs",
-    "test:models": "node --test lib/anthropic-system-docs.test.mjs lib/anthropic-tool-ids.test.mjs lib/anthropic-tool-ids.integration.test.mjs lib/anthropic-foreign-thinking.test.mjs lib/resend-model.integration.test.mjs hooks/resend-model.test.mjs lib/gemini-4-thinking.test.mjs",
+    "test:models": "node --test lib/anthropic-adaptive-thinking.test.mjs lib/anthropic-system-docs.test.mjs lib/anthropic-tool-ids.test.mjs lib/anthropic-tool-ids.integration.test.mjs lib/anthropic-foreign-thinking.test.mjs lib/resend-model.integration.test.mjs hooks/resend-model.test.mjs lib/gemini-4-thinking.test.mjs",
     "test:billion-context": "node scripts/verify-billion-context.mjs",
     "lint": "eslint .",
     "test:terminal": "node e2e/terminal.mjs",

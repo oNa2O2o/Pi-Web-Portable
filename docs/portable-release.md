@@ -6,7 +6,10 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
-1.4.0 bundles Pi Web 0.12.2 and Node.js 24.20.0 and adds the single-file
+1.4.1 bundles Pi Web 0.12.2 and Node.js 24.20.0. It fixes legacy budget-based
+thinking requests for custom Claude Opus 5.5 and Sonnet 5.5 models on api.chiyi.cc
+by sending adaptive thinking and the selected effort, without changing saved
+configuration or conversation history. Version 1.4.0 added the single-file
 executable. Like 1.3.3, it includes native Claude
 tool-history compatibility with billion-context and persistent model selection
 when resending after errors or timeouts. It also replaces the affected Claude
@@ -15,7 +18,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.4.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.5.0 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -67,7 +70,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.4.0 `
+  -ExpectedVersion 1.5.0 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -101,3 +104,21 @@ available.
 The `Windows portable release` workflow runs packaging, launch, upgrade, and
 naming checks. Only a `portable-v*` tag publishes release assets; a manual
 workflow run produces a downloadable workflow artifact.
+
+## Voice input plugin
+
+`portable/plugins` is copied to `appplugins`. When `apppluginspiweb-plugin-loader.cjs`
+exists, the launcher adds `--require <loader>` to `NODE_OPTIONS` and sets
+`PIWEB_PLUGIN_LOG_DIR` to `logs`. The loader only activates inside the `next start`
+process and removes itself from `NODE_OPTIONS` there, so agent tools and terminals
+do not inherit it. It:
+
+- injects `apppluginsweb*.js` into HTML pages (served from `/__piweb-plugins/`);
+- starts `apppluginsserveroice-asrserver.cjs` (sherpa-onnx, Apache-2.0) on a
+  random loopback port and proxies `/__piweb-plugins/ws/voice-asr` to it; only
+  loopback origins are accepted;
+- writes diagnostics to `logsoice-input.log`.
+
+The build installs the service dependencies with `npm ci` and downloads the
+X-ASR zh/en streaming model (~160 MB) into `portable.voice-cache`, verifying each
+file by SHA256. The Pi Web application source is not modified.
