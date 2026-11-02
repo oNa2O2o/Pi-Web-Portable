@@ -9,7 +9,12 @@ const retryFiles = [
 ];
 
 const marker = "pi-web transient gateway compatibility";
-const anchor = '    "524",\n';
+// pi-ai <= 1.2 listed status codes one per line; 1.4 folded them into one
+// lookaround pattern, so fall back to the head of the retryable list.
+const anchors = [
+  '    "524",\n',
+  "const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([\n",
+];
 const addition = [
   `    // ${marker}: some OpenAI-compatible gateways use these`,
   "    // responses for temporary upstream routing failures.",
@@ -32,7 +37,8 @@ for (const retryFile of retryFiles) {
     present += 1;
     continue;
   }
-  if (!source.includes(anchor)) {
+  const anchor = anchors.find((candidate) => source.includes(candidate));
+  if (!anchor) {
     throw new Error(`Could not find retry pattern anchor in ${retryFile}`);
   }
 
