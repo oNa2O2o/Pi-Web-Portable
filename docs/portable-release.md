@@ -6,6 +6,11 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.7.1 fixes MCP being off in every portable build: `next build` links server
+externals as `.next\node_modules\<name>-<hash>` junctions, copying the build
+turned them into a second copy of the SDK, and Pi Web refuses MCP then.
+`scripts/link-next-externals.mjs` now replaces them with re-export stubs.
+Portable
 1.7.0 bundles Pi Web 0.13.0 (pi 1.4.0): the Debug panel, line-by-line tool
 arguments, svg and audio/video previews, copyable LaTeX, prompts queued during
 compaction, per-model Base URL and image size limit, original-size image
@@ -28,7 +33,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.7.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.7.1 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -80,7 +85,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.7.0 `
+  -ExpectedVersion 1.7.1 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 

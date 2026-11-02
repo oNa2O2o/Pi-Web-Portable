@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.7.0",
+  [string]$PortableVersion = "1.7.1",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
@@ -130,6 +130,7 @@ if (-not $ReuseStage) {
   Invoke-Robocopy (Join-Path $sourceDir "public") (Join-Path $stageApp "public") @()
   $nextDir = Join-Path $sourceDir ".next"
   Invoke-Robocopy $nextDir (Join-Path $stageApp ".next") @(
+    "/XJD",
     "/XD",
     (Join-Path $nextDir "cache"),
     (Join-Path $nextDir "dev")
@@ -165,7 +166,7 @@ else {
     Invoke-Robocopy (Join-Path $sourceDir $name) (Join-Path $stageApp $name) @()
   }
   $nextDir = Join-Path $sourceDir ".next"
-  Invoke-Robocopy $nextDir (Join-Path $stageApp ".next") @("/XD", (Join-Path $nextDir "cache"), (Join-Path $nextDir "dev"))
+  Invoke-Robocopy $nextDir (Join-Path $stageApp ".next") @("/XJD", "/XD", (Join-Path $nextDir "cache"), (Join-Path $nextDir "dev"))
   if ($dependenciesChanged) {
     Push-Location $stageApp
     try {
@@ -176,6 +177,12 @@ else {
     finally { Pop-Location }
   }
 }
+
+# next build links server externals as .next\node_modules\<name>-<hash>
+# junctions into the source tree. Replace them with re-export stubs so the
+# package loads the SDK from app\node_modules (otherwise MCP turns itself off).
+& $nodeExe (Join-Path $sourceDir "scripts\link-next-externals.mjs") $stageApp (Join-Path $sourceDir ".next\node_modules")
+if ($LASTEXITCODE -ne 0) { throw "Linking Next.js externals failed: $LASTEXITCODE" }
 
 # Browser plugins (long-press voice input + local streaming speech recognition).
 # Source lives in portable\plugins; the sherpa-onnx model is downloaded once into
