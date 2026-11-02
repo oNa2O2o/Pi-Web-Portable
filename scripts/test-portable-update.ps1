@@ -36,7 +36,7 @@ try {
   Copy-Item -LiteralPath (Join-Path $package "Pi-Web-Portable.exe") -Destination $helper
   $arguments = '--apply-update --target "{0}" --archive "{1}" --preserve-archive --non-interactive --port {2}' -f $target, $archive, $Port
   $update = Start-Process -FilePath $helper -ArgumentList $arguments -WindowStyle Hidden -PassThru
-  if (-not $update.WaitForExit(180000)) {
+  if (-not $update.WaitForExit(600000)) {
     Stop-Process -Id $update.Id -Force
     throw "Updater timed out"
   }
