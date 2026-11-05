@@ -8,7 +8,7 @@ function isRecord(value: unknown): value is RecordValue {
 function referenceBuiltinDocs(text: string): string {
   return text.replace(/<docs>([\s\S]*?)<\/docs>/g, (section, contents: string) => {
     const lines = contents.trim().split(/\r?\n/);
-    if (!lines[0]?.startsWith("Pi documentation (read only when the user asks about pi itself,")
+    if (!/^Pi documentation \(read only when the user asks about (pi|the harness) itself,/.test(lines[0] ?? "")
       || !lines.some((line) => line.startsWith("- When asked about:")
         && line.includes("docs/custom-provider.md") && line.includes("docs/packages.md"))) {
       return section;
@@ -22,7 +22,8 @@ function referenceBuiltinDocs(text: string): string {
       && !line.startsWith("- When asked about:")
       && !line.startsWith("- When reading pi docs or examples, resolve docs/...")
       && !line.startsWith("- When working on pi topics, read the docs and examples,")
-      && !line.startsWith("- Always read pi .md files completely and follow links"));
+      && !line.startsWith("- Always read pi .md files completely and follow links")
+      && !line.startsWith("- Before implementing harness changes, read the relevant docs and examples"));
     return [
       "<docs>",
       "Pi documentation locations:",

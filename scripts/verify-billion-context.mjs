@@ -33,7 +33,7 @@ const upstream = createServer(async (req, res) => {
       : (body.system ?? []).map((block) => block.text ?? "").join("\n");
     assert.ok(systemText.includes("Pi documentation locations:"), "reference docs must survive the plugin");
     assert.ok(systemText.includes("- Additional docs:"));
-    assert.ok(!systemText.includes("pi packages (docs/packages.md)"),
+    assert.ok(!systemText.includes("packages (docs/packages.md)"),
       "the plugin must not restore the rejected system index");
     assert.ok(!JSON.stringify(body).includes("FOREIGN_REASONING_MUST_NOT_BECOME_DIALOGUE"),
       "the plugin must not reintroduce foreign reasoning as assistant text");
