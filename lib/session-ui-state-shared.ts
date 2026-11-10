@@ -66,8 +66,31 @@ export interface SessionUiState {
    */
   sessionRanks?: Record<string, number>;
 }
-/** One session folder: the project it lives in, its name, and when it was made (sort order). */
-export interface SessionUiFolderState { projectKey: string; name: string; createdAt: number }
+/**
+ * One session folder: the project it lives in, its name, when it was made,
+ * its place among the project's folders once dragged (`rank`, smaller is
+ * higher), and when it was archived (hidden while none of its sessions shows).
+ */
+export interface SessionUiFolderState { projectKey: string; name: string; createdAt: number; rank?: number; archivedAt?: number }
+
+/**
+ * `projectKey`'s folders (archived ones included) in sidebar order: the
+ * dragged ones by `rank`, then the rest oldest first.
+ */
+export function sortedFolderEntries(
+  folders: Readonly<Record<string, SessionUiFolderState>>,
+  projectKey: string,
+): [string, SessionUiFolderState][] {
+  return Object.entries(folders)
+    .filter(([, folder]) => folder.projectKey === projectKey)
+    .sort(([aId, a], [bId, b]) => {
+      const aRanked = a.rank !== undefined;
+      const bRanked = b.rank !== undefined;
+      if (aRanked !== bRanked) return aRanked ? -1 : 1;
+      const byKey = aRanked ? a.rank! - b.rank! : a.createdAt - b.createdAt;
+      return byKey || (aId < bId ? -1 : aId > bId ? 1 : 0);
+    });
+}
 /** Most folders the state holds. */
 export const MAX_SESSION_FOLDERS = 500;
 /** Most family → folder assignments the state holds. */
@@ -96,6 +119,10 @@ export type SessionUiStateRequest =
   | { action: "rename-folder"; id: string; name: string }
   /** Removes a folder; its sessions go back to the project's ungrouped list. */
   | { action: "delete-folder"; id: string }
+  /** A drag: folder `id` goes right before or after folder `anchorId` of the same project. */
+  | { action: "move-folder"; id: string; anchorId: string; position: ProjectMovePosition }
+  /** Archives a folder (its sessions are archived with "set") or brings it back. */
+  | { action: "archive-folder"; id: string; archived: boolean }
   /** Puts families into a folder, or out of any folder with null. */
   | { action: "move-to-folder"; ids: string[]; folderId: string | null }
   /** A drag: into `folderId` (null: out of folders), with new sort keys when placed between rows. */
@@ -279,7 +306,10 @@ export function normalizeSessionUiState(value: unknown): SessionUiState | null {
       if (!isSessionId(id) || !isPlainObject(entry)) continue;
       const name = projectDisplayName(entry.name);
       if (!isProjectString(entry.projectKey) || typeof name !== "string" || !isTimestamp(entry.createdAt)) continue;
-      folders[id] = { projectKey: entry.projectKey, name, createdAt: entry.createdAt };
+      const folder: SessionUiFolderState = { projectKey: entry.projectKey, name, createdAt: entry.createdAt };
+      if (typeof entry.rank === "number" && Number.isFinite(entry.rank)) folder.rank = entry.rank;
+      if (isTimestamp(entry.archivedAt)) folder.archivedAt = entry.archivedAt;
+      folders[id] = folder;
       count++;
     }
     if (count > 0) {
@@ -462,6 +492,17 @@ export function parseSessionUiStateRequest(body: unknown): ParseResult {
       if (!isSessionId(body.id)) return { ok: false, error: "id must be a folder id" };
       return { ok: true, request: { action: "delete-folder", id: body.id } };
     }
+    case "move-folder": {
+      if (!isSessionId(body.id) || !isSessionId(body.anchorId)) return { ok: false, error: "id and anchorId must be folder ids" };
+      if (body.id === body.anchorId) return { ok: false, error: "id and anchorId must differ" };
+      if (body.position !== "before" && body.position !== "after") return { ok: false, error: "position must be \"before\" or \"after\"" };
+      return { ok: true, request: { action: "move-folder", id: body.id, anchorId: body.anchorId, position: body.position } };
+    }
+    case "archive-folder": {
+      if (!isSessionId(body.id)) return { ok: false, error: "id must be a folder id" };
+      if (typeof body.archived !== "boolean") return { ok: false, error: "archived must be a boolean" };
+      return { ok: true, request: { action: "archive-folder", id: body.id, archived: body.archived } };
+    }
     case "move-to-folder": {
       const ids = parseIds(body.ids);
       if (!ids.ok) return ids;
@@ -483,7 +524,7 @@ export function parseSessionUiStateRequest(body: unknown): ParseResult {
       return { ok: true, request: { action: "place-sessions", ids: ids.ids, folderId: body.folderId as string | null, ...(ranks ? { ranks } : {}) } };
     }
     default:
-      return { ok: false, error: "action must be \"set\", \"restore\", \"pin-project\", \"add-projects\", \"move-project\", \"rename-project\", \"create-folder\", \"rename-folder\", \"delete-folder\", \"move-to-folder\" or \"place-sessions\"" };
+      return { ok: false, error: "action must be \"set\", \"restore\", \"pin-project\", \"add-projects\", \"move-project\", \"rename-project\", \"create-folder\", \"rename-folder\", \"delete-folder\", \"move-folder\", \"archive-folder\", \"move-to-folder\" or \"place-sessions\"" };
   }
 }
 
@@ -688,6 +729,8 @@ export function applySessionUiStateRequest(
         const previous = hasOwn(next.sessions, id) ? next.sessions[id] : undefined;
         if (writeFamily(next.sessions, id, nextFamily(previous, request, now))) changed = true;
       }
+      // A session brought back from the archive brings its folder back too.
+      if ("archived" in request && !request.archived && unarchiveFoldersOf(next, request.ids)) changed = true;
       break;
     case "restore":
       for (const entry of request.entries) {
@@ -696,6 +739,7 @@ export function applySessionUiStateRequest(
         if (entry.archivedAt !== null) family.archivedAt = entry.archivedAt;
         if (writeFamily(next.sessions, entry.id, family)) changed = true;
       }
+      if (unarchiveFoldersOf(next, request.entries.filter((entry) => entry.archivedAt === null).map((entry) => entry.id))) changed = true;
       break;
     case "pin-project": {
       const { projectKey, root } = request;
@@ -768,6 +812,33 @@ export function applySessionUiStateRequest(
       changed = true;
       break;
     }
+    case "move-folder": {
+      const folders = next.folders;
+      if (!folders || !hasOwn(folders, request.id) || !hasOwn(folders, request.anchorId)) break;
+      const projectKey = folders[request.id].projectKey;
+      if (folders[request.anchorId].projectKey !== projectKey) break;
+      const ids = sortedFolderEntries(folders, projectKey).map(([id]) => id).filter((id) => id !== request.id);
+      const index = ids.indexOf(request.anchorId);
+      ids.splice(request.position === "before" ? index : index + 1, 0, request.id);
+      ids.forEach((id, rank) => {
+        if (folders[id].rank === rank) return;
+        folders[id].rank = rank;
+        changed = true;
+      });
+      break;
+    }
+    case "archive-folder": {
+      const folder = next.folders && hasOwn(next.folders, request.id) ? next.folders[request.id] : undefined;
+      if (!folder) break;
+      if (request.archived) {
+        folder.archivedAt = now;
+        changed = true;
+      } else if (folder.archivedAt !== undefined) {
+        delete folder.archivedAt;
+        changed = true;
+      }
+      break;
+    }
     case "move-to-folder":
       if (writeFolderMembers(next, request.ids, request.folderId)) changed = true;
       break;
@@ -789,6 +860,22 @@ export function applySessionUiStateRequest(
     }
   }
   return { state: next, changed };
+}
+
+/** Clears the archive mark of the folders `ids` are filed in; true when any had one. */
+function unarchiveFoldersOf(state: SessionUiState, ids: readonly string[]): boolean {
+  const { folders, folderOf } = state;
+  if (!folders || !folderOf) return false;
+  let changed = false;
+  for (const id of ids) {
+    if (!hasOwn(folderOf, id)) continue;
+    const folderId = folderOf[id];
+    const folder = hasOwn(folders, folderId) ? folders[folderId] : undefined;
+    if (folder?.archivedAt === undefined) continue;
+    delete folder.archivedAt;
+    changed = true;
+  }
+  return changed;
 }
 
 /** Puts `ids` into `folderId` (or out of any folder with null); true when anything changed. */

@@ -144,6 +144,10 @@ export interface SessionTreeProps {
   onDropSessions?(ids: string[], target: SidebarRow, position: SessionDropPosition): void;
   /** A session folder's ⋯: Rename…, Delete folder. */
   onFolderMenu?(row: FolderRow, opener: HTMLElement): void;
+  /** A session folder's "+": a new session that goes into the folder. */
+  onFolderNew?(row: FolderRow): void;
+  /** A folder dragged before or after another folder of its project. */
+  onMoveFolder?(folderId: string, anchorId: string, position: SessionDropPosition): void;
   onRenameFolderCommit?(folderId: string, value: string): void;
   onRenameFolderCancel?(): void;
   /** An unpinned empty group's "Pin to keep": without sessions, only a pin keeps it listed. */
@@ -284,7 +288,7 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
   // Sessions are dragged with the browser's own drag and drop (desktop):
   // handled once on the inner box, by the row under the pointer.
   const sessionDraggable = Boolean(props.onDropSessions) && layout === "desktop";
-  const sessionDragRef = useRef<{ ids: string[]; projectKey: string } | null>(null);
+  const sessionDragRef = useRef<{ ids: string[]; projectKey: string; folderId?: string } | null>(null);
   const [sessionDrop, setSessionDrop] = useState<{ key: string; position: SessionDropPosition } | null>(null);
   const rowIndexByKey = useMemo(() => new Map(rows.map((row, index) => [row.key, index])), [rows]);
   const dragRowAt = (event: ReactDragEvent): { row: SidebarRow; element: Element } | null => {
@@ -297,6 +301,13 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     const hit = dragRowAt(event);
     if (!sessionDraggable || !hit) return;
     const { row } = hit;
+    if (row.kind === "folder") {
+      if (!props.onMoveFolder) return;
+      sessionDragRef.current = { ids: [], projectKey: row.project.key, folderId: row.folderId };
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("application/x-pi-web-folder", row.folderId);
+      return;
+    }
     if (row.kind !== "session" || row.context !== "group" || row.status.transient) return;
     const id = row.family.root.id;
     // A picked session takes the whole pick (in tree order) along.
@@ -315,6 +326,22 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     const hit = drag ? dragRowAt(event) : null;
     if (!drag || !hit) return null;
     const { row, element } = hit;
+    if (drag.folderId) {
+      // A folder goes before or after another folder; a folder's session row
+      // stands for its folder (after it, with its sessions).
+      if (row.kind !== "folder" && row.kind !== "session") return null;
+      if (row.project.key !== drag.projectKey) return null;
+      if (row.kind === "folder") {
+        if (row.folderId === drag.folderId) return null;
+        const rect = element.getBoundingClientRect();
+        return { row, position: event.clientY < rect.top + rect.height / 2 ? "before" : "after" };
+      }
+      if (row.kind === "session" && row.context === "group" && row.folderId && row.folderId !== drag.folderId) {
+        const folder = rows.find((item) => item.kind === "folder" && item.folderId === row.folderId);
+        return folder ? { row: folder, position: "after" } : null;
+      }
+      return null;
+    }
     if (row.kind === "session") {
       if (row.context !== "group" || row.project.key !== drag.projectKey || drag.ids.includes(row.family.root.id)) return null;
       const rect = element.getBoundingClientRect();
@@ -343,6 +370,10 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     setSessionDrop(null);
     if (!drag || !target) return;
     event.preventDefault();
+    if (drag.folderId) {
+      if (target.row.kind === "folder") handlersRef.current.onMoveFolder?.(drag.folderId, target.row.folderId, target.position);
+      return;
+    }
     handlersRef.current.onDropSessions?.(drag.ids, target.row, target.position);
   };
   const handleSessionDragEnd = () => {
@@ -353,6 +384,20 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
     if (!(event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget))) setSessionDrop(null);
   };
   const sessionDropIndex = sessionDrop ? rowIndexByKey.get(sessionDrop.key) : undefined;
+  // After an open folder means after its sessions too: the line goes below them.
+  let sessionDropLineIndex = sessionDropIndex;
+  if (sessionDrop?.position === "after" && sessionDropIndex !== undefined) {
+    const target = rows[sessionDropIndex];
+    if (target.kind === "folder") {
+      let last = sessionDropIndex;
+      while (last + 1 < rows.length) {
+        const next = rows[last + 1];
+        if (next.kind !== "session" || next.folderId !== target.folderId) break;
+        last++;
+      }
+      sessionDropLineIndex = last;
+    }
+  }
   // A group header can be dragged to another place in its band (pinned
   // projects, or the others) when the band has another group.
   const canMoveGroups = Boolean(props.onMoveGroup);
@@ -579,6 +624,7 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
                     height={height}
                     menuOpen={menuOpen}
                     renaming={row.folderId === renamingFolderId}
+                    draggable={sessionDraggable && Boolean(props.onMoveFolder)}
                     handlers={handlersRef}
                   />
                 );
@@ -603,7 +649,7 @@ export function SessionTree(props: SessionTreeProps): ReactNode {
               <div
                 className="session-tree-drop-line"
                 aria-hidden="true"
-                style={{ top: offsets[sessionDrop.position === "before" ? sessionDropIndex : sessionDropIndex + 1] }}
+                style={{ top: offsets[sessionDrop.position === "before" ? sessionDropIndex : (sessionDropLineIndex ?? sessionDropIndex) + 1] }}
               />
             ))}
           </div>
@@ -1144,6 +1190,7 @@ const FolderRowView = memo(function FolderRowView({
   height,
   menuOpen,
   renaming,
+  draggable,
   handlers,
 }: {
   row: FolderRow;
@@ -1151,6 +1198,7 @@ const FolderRowView = memo(function FolderRowView({
   height: number;
   menuOpen: boolean;
   renaming: boolean;
+  draggable: boolean;
   handlers: Handlers;
 }) {
   const { t } = useI18n();
@@ -1172,7 +1220,7 @@ const FolderRowView = memo(function FolderRowView({
     );
   }
   return (
-    <div className={className} style={rowStyle(top, height)} data-row-key={row.key}>
+    <div className={className} style={rowStyle(top, height)} data-row-key={row.key} draggable={draggable || undefined}>
       <button
         type="button"
         className="session-tree-folder-toggle"
@@ -1186,6 +1234,20 @@ const FolderRowView = memo(function FolderRowView({
         {!row.expanded && <ActivitySummary running={row.running} unread={row.unread} t={t} />}
       </button>
       <span className="session-tree-group-actions">
+        {handlers.current.onFolderNew && (
+          <button
+            type="button"
+            className="session-tree-group-action"
+            aria-label={t("sidebar.newSessionInFolder", { name: row.name })}
+            title={t("sidebar.newSessionInFolder", { name: row.name })}
+            onClick={(event) => {
+              event.stopPropagation();
+              handlers.current.onFolderNew?.(row);
+            }}
+          >
+            <PlusIcon size={13} />
+          </button>
+        )}
         <button
           type="button"
           className={`session-tree-group-action${menuOpen ? " is-active" : ""}`}

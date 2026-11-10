@@ -646,6 +646,9 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   }, []);
   const selectedSessionIdRef = useRef(selectedSessionId);
   selectedSessionIdRef.current = selectedSessionId;
+  /** A folder's "+" waiting for its new session's real id. */
+  const pendingFolderRef = useRef<{ folderId: string; since: number } | null>(null);
+  const previousSelectedRef = useRef(selectedSessionId);
   const [toast, setToast] = useState<SidebarToastData | null>(null);
   const toastIdRef = useRef(0);
   const showToast = useCallback((message: string, actions: SidebarToastAction[] = [], tail?: string) => {
@@ -1375,6 +1378,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   // adopts it up front: a session in another project closes the previous
   // project's file tabs instead of being mistaken for identity hydration.
   const startNewSessionIn = useCallback(({ cwd, projectKey, projectRoot, carryComposer }: NewSessionTarget) => {
+    // Any other new session drops a folder's pending "+" (handleFolderNew sets it again after this).
+    pendingFolderRef.current = null;
     // A worktree without sessions has no other source of identity yet.
     if (projectKey && projectRoot) setValidatedProject({ cwd, root: projectRoot, key: projectKey });
     setSelectedCwd(cwd);
@@ -2297,6 +2302,56 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     startNewSessionIn(newSessionTargetForProject(project, selectedCwd));
   }, [selectedCwd, startNewSessionIn]);
 
+  // A folder's "+": a new session in the folder's project, put into the
+  // folder once it has its real id (the draft has none yet).
+  const handleFolderNew = useCallback((row: FolderRow) => {
+    setMenu(null);
+    startNewSessionIn(newSessionTargetForProject(row.project, selectedCwd));
+    pendingFolderRef.current = { folderId: row.folderId, since: Date.now() - 5000 };
+  }, [selectedCwd, startNewSessionIn]);
+
+  // The draft (no id) turns into a real session: it goes into the pending folder.
+  useEffect(() => {
+    const previous = previousSelectedRef.current;
+    previousSelectedRef.current = selectedSessionId;
+    const pending = pendingFolderRef.current;
+    if (!pending || !selectedSessionId || previous === selectedSessionId) return;
+    pendingFolderRef.current = null;
+    if (previous !== null) return;
+    const known = allSessions.find((session) => session.id === selectedSessionId);
+    if (known && Date.parse(known.created) < pending.since) return;
+    void applyUiState({ action: "move-to-folder", ids: [selectedSessionId], folderId: pending.folderId });
+  }, [selectedSessionId, allSessions, applyUiState]);
+
+  const handleMoveFolder = useCallback((folderId: string, anchorId: string, position: SessionDropPosition) => {
+    if (position === "into" || folderId === anchorId) return;
+    void applyUiState({ action: "move-folder", id: folderId, anchorId, position });
+  }, [applyUiState]);
+
+  // A folder's "Archive folder": its sessions go to the archive, and the folder
+  // hides until one of them comes back (restore unmarks it).
+  const archiveFolder = useCallback((row: FolderRow) => {
+    const members: SessionFamily[] = [];
+    for (const family of familyByRootId.values()) {
+      if (folderOfFamily(uiState, family.root.id) !== row.folderId) continue;
+      if (isFamilyArchived(family, uiState, runningSessionIds)) continue;
+      if (familyIds(family).some((id) => runningSessionIds.has(id))) continue;
+      members.push(family);
+    }
+    void applyUiState({ action: "archive-folder", id: row.folderId, archived: true });
+    if (members.length > 0) {
+      archiveFamilies(members);
+      return;
+    }
+    showToast(t("sidebar.folderArchivedToast", { name: row.name }), [
+      {
+        id: "undo",
+        label: t("sidebar.undo"),
+        onClick: () => { void applyUiState({ action: "archive-folder", id: row.folderId, archived: false }); },
+      },
+    ]);
+  }, [applyUiState, archiveFamilies, familyByRootId, runningSessionIds, showToast, t, uiState]);
+
   const closeMenu = useCallback(() => setMenu(null), []);
 
   // After a right-click menu, focus returns to where it was unless the chosen
@@ -2603,9 +2658,17 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     {
       type: "item",
       id: "new-session-here",
-      label: t("sidebar.newSessionInProject", { name: row.project.name }),
+      label: t("sidebar.newSessionInFolder", { name: row.name }),
       icon: <PlusIcon />,
-      onSelect: () => handleGroupNew(row.project),
+      onSelect: () => handleFolderNew(row),
+    },
+    {
+      type: "item",
+      id: "archive-folder",
+      label: t("sidebar.archiveFolder"),
+      note: t("sidebar.archiveFolderNote"),
+      icon: <ArchiveIcon />,
+      onSelect: () => { setMenu(null); archiveFolder(row); },
     },
     { type: "separator", id: "separator-folder-delete" },
     {
@@ -2965,6 +3028,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     onGroupMenu: handleGroupMenu,
     onToggleFolder: handleToggleFolder,
     onFolderMenu: handleFolderMenu,
+    onFolderNew: handleFolderNew,
+    onMoveFolder: handleMoveFolder,
     onRenameFolderCommit: commitFolderRename,
     onRenameFolderCancel: () => { if (renamingFolderId) endFolderRename(renamingFolderId); },
     onPinEmptyGroup: (project: SidebarProject) => {

@@ -18,7 +18,7 @@
  */
 
 import { listSessionFamilies, type SessionFamily } from "./session-family";
-import { storedProjectName, type ProjectMovePosition, type SessionUiFamilyState, type SessionUiState } from "./session-ui-state-shared";
+import { sortedFolderEntries, storedProjectName, type ProjectMovePosition, type SessionUiFamilyState, type SessionUiState } from "./session-ui-state-shared";
 import type { SessionInfo } from "./types";
 import { workspaceKeyOf } from "./workspace-memory";
 
@@ -210,14 +210,21 @@ export function folderOfFamily(state: SessionUiState, rootId: string): string | 
   return state.folders && Object.hasOwn(state.folders, folderId) ? folderId : undefined;
 }
 
-/** A project's session folders, oldest first. */
-export function projectFolders(state: SessionUiState, projectKey: string): { id: string; name: string; createdAt: number }[] {
+/**
+ * A project's session folders in sidebar order: by the place a drag gave
+ * them (`rank`), else oldest first after the placed ones. Archived folders
+ * are left out unless `includeArchived`.
+ */
+export function projectFolders(
+  state: SessionUiState,
+  projectKey: string,
+  includeArchived = false,
+): { id: string; name: string; createdAt: number; archived: boolean }[] {
   const folders = state.folders;
   if (!folders) return [];
-  return Object.entries(folders)
-    .filter(([, folder]) => folder.projectKey === projectKey)
-    .map(([id, folder]) => ({ id, name: folder.name, createdAt: folder.createdAt }))
-    .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+  return sortedFolderEntries(folders, projectKey)
+    .filter(([, folder]) => includeArchived || folder.archivedAt === undefined)
+    .map(([id, folder]) => ({ id, name: folder.name, createdAt: folder.createdAt, archived: folder.archivedAt !== undefined }));
 }
 
 export function isGroupExpanded(project: SidebarProject, groupExpansion: Readonly<Record<string, boolean>>): boolean {
@@ -575,7 +582,7 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
     rows.push({ kind: "group", key: `group:${project.key}`, project, expanded, running, awaiting, unread });
 
     if (expanded) {
-      const folders = projectFolders(uiState, project.key);
+      const folders = projectFolders(uiState, project.key, true);
       const inFolder = new Map<string, SessionFamily[]>();
       const ungrouped: SessionFamily[] = [];
       for (const family of groupFamilies) {
@@ -587,6 +594,9 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
       }
       for (const folder of folders) {
         const members = inFolder.get(folder.id) ?? [];
+        // An archived folder stays out of sight until one of its sessions is
+        // back (restored, or new activity), like an archived session.
+        if (folder.archived && members.length === 0) continue;
         const key = folderExpansionKey(folder.id);
         const choice = Object.hasOwn(input.groupExpansion, key) ? input.groupExpansion[key] : undefined;
         const folderExpanded = typeof choice === "boolean" ? choice : true;
@@ -609,7 +619,7 @@ export function buildSessionTree(input: SessionTreeInput): SessionTreeModel {
         }
       }
       if (ungrouped.length === 0) {
-        if (folders.length === 0) rows.push({ kind: "group-empty", key: `empty:${project.key}`, project });
+        if (!folders.some((folder) => !folder.archived || inFolder.has(folder.id))) rows.push({ kind: "group-empty", key: `empty:${project.key}`, project });
       } else {
         const { visible, revealed, nextShown } = visibleFamilies(ungrouped, GROUP_VISIBLE_LIMIT, shownMoreFor(input.moreShown, project.key), input);
         for (const family of visible) rows.push(sessionRow(family, "group", project, input));
