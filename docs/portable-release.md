@@ -6,6 +6,8 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.8.1 adds sidebar folder drag-reordering, a "+" on a folder row that files
+the new session into it, and archiving a folder with its sessions. Portable
 1.8.0 bundles Pi Web 0.15.0 (pi 1.5.0, Next 16.4.4): side chats, quoting a
 selection, switching models during a run, draggable right-panel tabs, ordered
 custom provider models, a Git change tree, PowerShell as the default Windows
@@ -39,7 +41,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.8.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.8.1 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -91,7 +93,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.8.0 `
+  -ExpectedVersion 1.8.1 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 

@@ -1,7 +1,7 @@
 ﻿param(
   [string]$OutputDir = "",
   [string]$Repository = "oNa2O2o/Pi-Web-Portable",
-  [string]$PortableVersion = "1.8.0",
+  [string]$PortableVersion = "1.8.1",
   [string]$RuntimeDir = "",
   [string]$ArchiveDir = "",
   [switch]$SkipBuild,
