@@ -126,9 +126,13 @@ EOF
 
 rm -rf "$OUT"
 mkdir -p "$(dirname "$OUT")" "$ARCHIVE_DIR"
+OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
+ARCHIVE_DIR="$(cd "$ARCHIVE_DIR" && pwd)"
 mv "$STAGE" "$OUT"
 ZIP="$ARCHIVE_DIR/$ASSET"
 rm -f "$ZIP" "$ZIP.sha256"
 (cd "$(dirname "$OUT")" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$(basename "$OUT")" "$ZIP")
-echo "$(shasum -a 256 "$ZIP" | cut -d' ' -f1)  $ASSET" > "$ZIP.sha256"
+HASH="$(shasum -a 256 "$ZIP" | cut -d' ' -f1)"
+[ -n "$HASH" ] || { echo "Zip was not created: $ZIP" >&2; exit 1; }
+echo "$HASH  $ASSET" > "$ZIP.sha256"
 echo "Built $ZIP ($(du -h "$ZIP" | cut -f1))"
