@@ -111,6 +111,31 @@ npm run test:models
 - 打包后执行 `node scripts/verify-resend-model.mjs <包目录>/app`，验证实际 HTTP
   路径在 400/504 后重发、刷新及进程重启仍保留选择，并能继续成功响应。
 
+## 2026-11-11：模型设置页自动检测（便携版 1.9.1）
+
+- 自动检测直接做在原有的模型设置页面（`components/ModelsConfig.tsx`），不另开添加弹框；
+  新建与编辑 Provider 用同一页面，两种情况都必须生效。合并上游改动这个文件时，
+  保留 `ProviderDetail` / `ModelDetail` 中的自动检测逻辑，逻辑本身放在
+  `components/model-auto-check.ts`，界面片段放在 `components/ModelAutoCheckUi.tsx`。
+- Provider 页面打开即拉全部模型，并对已添加的每个模型实际调用一次；URL、Key、API、
+  Headers 改动后停手 0.8 秒重测；页面开着时每 60 秒刷新列表，新模型标「新」。
+- 模型页面打开即实际调用一次，显示耗时或具体失败原因。
+- 拉取或调用失败时显示具体原因（域名、连接、超时、证书、401、403 余额不足、404、
+  返回网页等）、服务商原话及试过的地址，不能退回只显示 "fetch failed"。
+- 当前接口调用失败、换接口类型或 `/v1` 写法可以调通时，自动修正并立即保存，
+  页面一行说明并可撤销；全部模型同样修正时改 Provider，否则只写模型级 `api` /
+  `baseUrl`（Pi SDK `ModelDefinitionSchema` 支持）。撤销后不再自动修正，直到连接设置变化。
+- 勾选的上游模型先实际调用，只有通过的可以添加；添加后立即保存，并按用户预设
+  （同名模型或同系列最新模型的 reasoning / input / contextWindow / maxTokens / compat /
+  thinkingLevelMap / headers）生成配置。
+- 检测结果写入 `~/.pi/agent/model-health.json`（插件服务 `server/model-health` 的
+  `/probe`、`/test`、`/record`），只记录与已保存配置一致的那次检测。服务不存在时退回
+  `/api/models-config/discover` 与 `/api/models-config/test`，页面仍可用。
+- 不得恢复 1.9.0 的 `model-quick-add.js` 弹框；页面提醒（小圆点、新模型提示、
+  右上角失败小字）由 `portable/plugins/web/model-health-ui.js` 负责。
+- 打包后 `scripts/verify-model-health.mjs` 验证提醒脚本注入、服务可用、错误具体、
+  外部来源被拒绝。
+
 ## 已有行为
 
 - 保留 `scripts/patch-pi-retry.mjs` 的临时网关错误重试及其回归测试。

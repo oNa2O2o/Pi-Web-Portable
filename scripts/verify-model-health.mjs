@@ -1,6 +1,6 @@
 // Verifies the model-health plugin service of a running portable package:
 //   node scripts/verify-model-health.mjs <port>
-// - the quick-add browser plugin is injected and served
+// - the model-health-ui browser plugin is injected and served
 // - the health service answers /status through the plugin API proxy
 // - /probe reports a specific, translated error for an unreachable endpoint
 // - a foreign origin is rejected
@@ -14,10 +14,10 @@ function fail(message) {
 }
 
 const html = await (await fetch(base + '/', { headers: { Accept: 'text/html' } })).text();
-const match = html.match(/<script src="(\/__piweb-plugins\/model-quick-add\.js\?v=[\w]+)"/);
-if (!match) fail('model-quick-add <script> tag not injected into the page');
+const match = html.match(/<script src="(\/__piweb-plugins\/model-health-ui\.js\?v=[\w]+)"/);
+if (!match) fail('model-health-ui <script> tag not injected into the page');
 const script = await fetch(base + match[1]);
-if (script.status !== 200 || !(await script.text()).includes('快速添加模型')) fail('model-quick-add script not served');
+if (script.status !== 200 || !(await script.text()).includes('模型连通性提醒')) fail('model-health-ui script not served');
 
 let status;
 for (let i = 0; i < 60; i++) {

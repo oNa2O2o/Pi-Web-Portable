@@ -463,6 +463,27 @@ function readJson(req) {
   });
 }
 
+// Results of tests run from the Models settings page are kept, so the panel,
+// the sidebar dots and the alerts always show the latest known state.
+function validName(name) { return typeof name === 'string' && name.trim() && name.length < 200; }
+function recordConn(name, r) {
+  if (!validName(name)) return;
+  const rec = state.providers[name] = state.providers[name] || { models: {} };
+  rec.conn = r.ok ? { ok: true, ms: r.ms, count: (r.models || []).length, at: Date.now() } : { ok: false, ...publicError(r), at: Date.now() };
+  refreshStatuses([name]);
+  saveState();
+}
+function recordTest(name, modelId, r) {
+  if (!validName(name)) return;
+  const rec = state.providers[name] = state.providers[name] || { models: {} };
+  rec.models = rec.models || {};
+  rec.models[modelId] = r.ok
+    ? { id: modelId, ok: true, ms: r.ms, api: r.api, baseUrl: r.baseUrl, at: Date.now() }
+    : { id: modelId, ok: false, ...publicError(r), api: r.attempts && r.attempts[0] && r.attempts[0].api, at: Date.now() };
+  refreshStatuses([name]);
+  saveState();
+}
+
 function publicState() {
   return {
     conn: { ...state.conn, nextRun: state.conn.lastRun ? state.conn.lastRun + CONN_EVERY : null, running: running.conn },
@@ -482,16 +503,33 @@ const server = http.createServer(async (req, res) => {
     if (!/application\/json/i.test(req.headers['content-type'] || '')) return send(415, { error: 'Content-Type must be application/json' });
     const body = await readJson(req);
     if (route === '/probe') {
-      const key = String(body.apiKey || '').trim();
+      const k = resolveKey(body.apiKey);
+      if (k.skip) return send(200, { ok: false, code: 'skip', error: k.skip });
+      const key = k.key;
       if (!key) return send(200, { ok: false, code: 'nokey', error: '请填写 API Key' });
-      return send(200, await listModels(body.baseUrl, key, body.headers, body.api));
+      const r = await listModels(body.baseUrl, key, body.headers, body.api);
+      recordConn(body.provider, r);
+      return send(200, r);
+    }
+    if (route === '/record') {
+      const modelId = String(body.modelId || '').trim();
+      if (!modelId || !body.result || typeof body.result !== 'object') return send(400, { error: 'modelId and result required' });
+      const r = body.result;
+      recordTest(body.provider, modelId, r.ok
+        ? { ok: true, ms: Number(r.ms) || undefined, api: String(r.api || ''), baseUrl: String(r.baseUrl || '') }
+        : { ok: false, code: String(r.code || 'error'), error: String(r.error || '调用失败').slice(0, 300), hint: r.hint ? String(r.hint).slice(0, 300) : undefined, detail: r.detail ? String(r.detail).slice(0, 300) : undefined, status: Number(r.status) || undefined });
+      return send(200, { ok: true });
     }
     if (route === '/test') {
-      const key = String(body.apiKey || '').trim();
+      const k = resolveKey(body.apiKey);
+      if (k.skip) return send(200, { ok: false, code: 'skip', error: k.skip });
+      const key = k.key;
       const modelId = String(body.modelId || '').trim();
       if (!key || !modelId) return send(400, { ok: false, error: 'apiKey 和 modelId 必填' });
       const apis = (Array.isArray(body.apis) ? body.apis : []).filter((a) => /^(anthropic-messages|openai-responses|openai-completions|google-generative-ai)$/.test(a));
-      return send(200, await testModel({ baseUrl: body.baseUrl, apiKey: key, modelId, apis, headers: body.headers }));
+      const r = await testModel({ baseUrl: body.baseUrl, apiKey: key, modelId, apis, headers: body.headers });
+      recordTest(body.provider, modelId, r);
+      return send(200, r);
     }
     if (route === '/run') {
       const kind = body.kind === 'call' ? 'call' : body.kind === 'all' ? 'all' : 'conn';

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the macOS (Apple silicon) portable package.
-#   scripts/build-portable-mac.sh --version 1.9.0 [--repository owner/repo] [--output dir] [--archive-dir dir] [--skip-build]
+#   scripts/build-portable-mac.sh --version 1.9.1 [--repository owner/repo] [--output dir] [--archive-dir dir] [--skip-build]
 # Output: <archive-dir>/pi-web-portable-mac-arm64.zip (+ .sha256). Inside the zip is one
 # folder "Pi-Web-Portable" with "Pi Web.command" (double-click to start), app/, runtime/node.
 # Must run on macOS arm64: the bundled Node.js and the speech-recognition native module
@@ -56,7 +56,7 @@ rsync -a --no-links --exclude /cache --exclude /dev "$SRC/.next/" "$APP/.next/"
 (cd "$APP" && npm ci --omit=dev --no-audit --no-fund)
 node "$SRC/scripts/link-next-externals.mjs" "$APP" "$SRC/.next/node_modules"
 
-# Browser plugins: voice input (local sherpa-onnx speech recognition) and model quick-add/health.
+# Browser plugins: voice input (local sherpa-onnx speech recognition) and model health checks.
 rsync -a --exclude node_modules --exclude models "$SRC/portable/plugins/" "$APP/plugins/"
 (cd "$APP/plugins/server/voice-asr" && npm install --omit=dev --no-audit --no-fund)
 [ -d "$APP/plugins/server/voice-asr/node_modules/sherpa-onnx-darwin-arm64" ] || { echo "sherpa-onnx-darwin-arm64 was not installed" >&2; exit 1; }

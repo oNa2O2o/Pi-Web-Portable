@@ -6,6 +6,12 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.9.1 moves the automatic model checks into the existing Models settings
+pages, so they apply when editing as well as adding: opening a provider page
+lists every upstream model and really calls each added model, opening a model
+page tests it, failures show the specific cause, a wrong API type or URL form
+is corrected and saved automatically (with undo), and only ticked models that
+pass a real call can be added. The separate quick-add dialog is removed. Portable
 1.9.0 adds a macOS (Apple silicon) package and the model quick-add/health
 plugins: filling in a Base URL and API key lists every model, the checked ones
 are tested with a real call and the API type and URL form are matched
@@ -49,7 +55,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.9.0 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.9.1 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -101,7 +107,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.9.0 `
+  -ExpectedVersion 1.9.1 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -159,7 +165,7 @@ file by SHA256. The Pi Web application source is not modified.
 Built on macOS arm64 (the release workflow's `build-mac` job on `macos-15`):
 
 ```bash
-scripts/build-portable-mac.sh --version 1.9.0
+scripts/build-portable-mac.sh --version 1.9.1
 scripts/test-portable-mac.sh portable/dist/mac/Pi-Web-Portable
 ```
 

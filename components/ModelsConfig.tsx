@@ -65,6 +65,23 @@ import {
   type EnabledModelsController,
 } from "./EnabledModelsSection";
 import { providerBadgeLabel } from "./enabled-models-helpers";
+import { AutoCheckNote, CheckBadge, CheckErrorBox, ProviderCheckLine } from "./ModelAutoCheckUi";
+import {
+  API_LABEL,
+  checkModel,
+  formatMs,
+  formatTime,
+  notifyHealthChanged,
+  pool,
+  prefixFromUrl,
+  presetModel,
+  PRESELECT_EVENT,
+  probeModels,
+  trimUrl,
+  type ModelCheck,
+  type ProbeResult,
+  type ProviderLike,
+} from "./model-auto-check";
 import { OAuthPastePanel } from "./OAuthPastePanel";
 import { ProviderIcon } from "./ProviderIcon";
 import { ProviderUsageSummary } from "./ProviderUsageSummary";
@@ -135,8 +152,8 @@ interface ModelsJson {
 type ModelTestState =
   | { phase: "idle" }
   | { phase: "testing" }
-  | { phase: "success"; latencyMs?: number; status?: number; responseText?: string }
-  | { phase: "error"; message: string; latencyMs?: number; status?: number };
+  | { phase: "success"; latencyMs?: number; status?: number; responseText?: string; at?: number }
+  | { phase: "error"; message: string; latencyMs?: number; status?: number; hint?: string; detail?: string; tried?: string[]; at?: number };
 
 type ModelDiscoveryState =
   | { phase: "idle" }
@@ -336,65 +353,274 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <ConfigSectionTitle>{children}</ConfigSectionTitle>;
 }
 
+const AMBER_TEXT = "#d97706";
+
+/** "404 404 page not found" → "404 page not found" */
+function shortError(error: string | undefined) {
+  const text = (error || "不通").trim().replace(/^(\d{3})\s+\1\b/, "$1");
+  return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+}
+
 // ── Provider detail ───────────────────────────────────────────────────────────
 
-function ProviderDetail({ name, editingName, provider, onChange, onEditingNameChange, onRename, onDelete, onAddModels, enabledModels }: {
+function sameConnection(a: ProviderEntry | undefined, b: ProviderEntry) {
+  return !!a && trimUrl(a.baseUrl) === trimUrl(b.baseUrl) && (a.apiKey ?? "") === (b.apiKey ?? "")
+    && (a.api ?? "") === (b.api ?? "") && JSON.stringify(a.headers ?? {}) === JSON.stringify(b.headers ?? {});
+}
+
+type Fix = Extract<ModelCheck, { state: "fix" }>;
+
+function ProviderDetail({ name, editingName, provider, onChange, onEditingNameChange, onRename, onDelete, onAddModels, enabledModels, providers, saved, onAutoSave }: {
   name: string; editingName: string; provider: ProviderEntry;
   onChange: (p: ProviderEntry) => void; onEditingNameChange: (n: string) => void;
   onRename: (n: string) => void; onDelete: () => void;
-  onAddModels: (models: DiscoveredModel[]) => void; enabledModels: EnabledModelsController;
+  onAddModels: (models: ModelEntry[], patch?: { api?: string; baseUrl?: string }) => void; enabledModels: EnabledModelsController;
+  /** Every provider in the draft: new models copy the settings of the same / similar model. */
+  providers: Record<string, ProviderEntry>;
+  /** This provider as saved on disk, or undefined when it is new. */
+  saved: ProviderEntry | undefined;
+  /** Writes models.json now (automatic corrections and added models). */
+  onAutoSave: (enableModelIds?: string[]) => void;
 }) {
   const { t } = useI18n();
   const [discoveryState, setDiscoveryState] = useState<ModelDiscoveryState>({ phase: "idle" });
   const [discoveryQuery, setDiscoveryQuery] = useState("");
   const [selectedModelIds, setSelectedModelIds] = useState<string[]>([]);
-  const discoveryRequestIdRef = useRef(0);
   const selectShownRef = useRef<HTMLInputElement>(null);
   const switchNoteId = useId();
   const set = <K extends keyof ProviderEntry>(k: K, v: ProviderEntry[K]) => onChange({ ...provider, [k]: v });
 
+  // ── automatic checks ──
+  const [probe, setProbe] = useState<ProbeResult | null>(null);
+  const [probing, setProbing] = useState(false);
+  /** Results for the models already added, by id. */
+  const [checks, setChecks] = useState<Record<string, ModelCheck>>({});
+  /** Results for upstream models ticked to add, by id. */
+  const [candidateChecks, setCandidateChecks] = useState<Record<string, ModelCheck>>({});
+  const [newIds, setNewIds] = useState<string[]>([]);
+  const [fixNote, setFixNote] = useState<{ text: string; undo: ProviderEntry } | null>(null);
+  const providerRef = useRef(provider);
+  providerRef.current = provider;
+  const record = sameConnection(saved, provider);
+  const recordRef = useRef(record);
+  recordRef.current = record;
+  /** Bumped when URL / key / API change: results of the old connection are dropped. */
+  const connSeqRef = useRef(0);
+  const probeSeqRef = useRef(0);
+  const knownIdsRef = useRef<Set<string> | null>(null);
+  const firstRunRef = useRef(true);
+  const undoneFixRef = useRef<string | null>(null);
+  const preselectRef = useRef<string[] | null>(null);
+  const connKey = JSON.stringify([trimUrl(provider.baseUrl), provider.apiKey ?? "", provider.api ?? "", provider.headers ?? {}]);
+  /** Latest props for the callbacks below, which stay stable so timers are not reset on every render. */
+  const latestRef = useRef({ editingName, providers, saved, onEditingNameChange, onChange, onAutoSave, probeOk: false });
+  latestRef.current = { editingName, providers, saved, onEditingNameChange, onChange, onAutoSave, probeOk: probe?.ok === true };
+
+  const runProbe = useCallback(async (silent: boolean) => {
+    const seq = ++probeSeqRef.current;
+    const current = providerRef.current;
+    if (!silent) setProbing(true);
+    const result = await probeModels(name, current, recordRef.current);
+    if (seq !== probeSeqRef.current) return;
+    setProbing(false);
+    const latest = latestRef.current;
+    if (!result.ok && silent && latest.probeOk) {
+      // A failed background refresh keeps the list but says so.
+      setProbe(result);
+      return;
+    }
+    setProbe(result);
+    if (result.ok) {
+      const ids = result.models.map((model) => model.id);
+      const known = knownIdsRef.current;
+      if (known) {
+        const fresh = ids.filter((id) => !known.has(id));
+        if (fresh.length) setNewIds((cur) => [...new Set([...cur, ...fresh])]);
+      }
+      knownIdsRef.current = new Set([...(known ?? []), ...ids]);
+      setDiscoveryState({ phase: "success", models: result.models, endpoint: result.endpoint });
+      if (preselectRef.current) {
+        const wanted = preselectRef.current.filter((id) => ids.includes(id));
+        preselectRef.current = null;
+        if (wanted.length) setSelectedModelIds((cur) => [...new Set([...cur, ...wanted])]);
+      }
+      // A new provider gets its name from the host (api.chiyi.cc → chiyi).
+      if (!latest.saved && latest.editingName === name && /^new-provider(-\d+)?$/.test(name)) {
+        const prefix = prefixFromUrl(current.baseUrl);
+        if (prefix) {
+          let candidate = prefix;
+          for (let n = 2; latest.providers[candidate]; n++) candidate = `${prefix}-${n}`;
+          latest.onEditingNameChange(candidate);
+        }
+      }
+    } else {
+      setDiscoveryState({ phase: "error", message: result.error });
+    }
+    notifyHealthChanged();
+  }, [name]);
+
+  const applyFixes = useCallback((tested: ProviderEntry, results: Record<string, ModelCheck>) => {
+    const current = providerRef.current;
+    const { onChange: change, onAutoSave: autoSave } = latestRef.current;
+    if (!sameConnection(tested, current)) return;
+    const fixes = Object.entries(results).filter((entry): entry is [string, Fix] => entry[1].state === "fix");
+    if (!fixes.length) return;
+    const signature = JSON.stringify([current.api ?? null, current.baseUrl ?? null, (current.models ?? []).map((model) => [model.api ?? null, model.baseUrl ?? null])]);
+    if (undoneFixRef.current === signature) return;
+    const models = current.models ?? [];
+    const testedCount = models.filter((model) => results[model.id]).length;
+    const [, first] = fixes[0];
+    const providerLevel = fixes.length === testedCount
+      && fixes.every(([, fix]) => fix.api === first.api && fix.baseUrl === first.baseUrl)
+      && models.every((model) => !model.api && !model.baseUrl);
+    const label = (api: string) => API_LABEL[api] ?? api;
+    let next: ProviderEntry;
+    let text: string;
+    if (providerLevel) {
+      next = { ...current, api: first.api, baseUrl: first.baseUrl !== trimUrl(current.baseUrl) ? first.baseUrl : current.baseUrl };
+      const parts = [first.api !== current.api ? `把 API 改为 ${label(first.api)}` : null, first.baseUrl !== trimUrl(current.baseUrl) ? `把 Base URL 改为 ${first.baseUrl}` : null].filter(Boolean);
+      text = `原配置调用失败（${shortError(first.error)}），已自动${parts.join("，")}，并已保存`;
+    } else {
+      const byId = new Map(fixes);
+      const providerUrl = trimUrl(current.baseUrl);
+      next = {
+        ...current,
+        models: models.map((model) => {
+          const fix = byId.get(model.id);
+          if (!fix) return model;
+          return { ...model, api: fix.api === current.api ? undefined : fix.api, baseUrl: fix.baseUrl === providerUrl ? undefined : fix.baseUrl };
+        }),
+      };
+      const names = fixes.map(([id]) => id);
+      const apis = [...new Set(fixes.map(([, fix]) => label(fix.api)))];
+      text = `${names.slice(0, 3).join("、")}${names.length > 3 ? ` 等 ${names.length} 个模型` : ""} 用原接口调用失败，已自动单独改用 ${apis.join(" / ")} 接口，并已保存`;
+    }
+    setFixNote({ text, undo: current });
+    change(next);
+    autoSave();
+  }, []);
+
+  const runChecks = useCallback(async (ids?: string[]) => {
+    const tested = providerRef.current;
+    const models = (tested.models ?? []).filter((model) => model.id.trim() && (!ids || ids.includes(model.id)));
+    if (!models.length || !trimUrl(tested.baseUrl) || !String(tested.apiKey ?? "").trim()) return;
+    const seq = connSeqRef.current;
+    setChecks((cur) => ({ ...cur, ...Object.fromEntries(models.map((model) => [model.id, { state: "run" } as ModelCheck])) }));
+    const results: Record<string, ModelCheck> = {};
+    await pool(models, 3, async (model) => {
+      const result = await checkModel(name, tested, model, recordRef.current);
+      if (seq !== connSeqRef.current) return;
+      results[model.id] = result;
+      setChecks((cur) => ({ ...cur, [model.id]: result }));
+    });
+    if (seq !== connSeqRef.current) return;
+    notifyHealthChanged();
+    applyFixes(tested, results);
+  }, [applyFixes, name]);
+
+  const runAll = useCallback(() => {
+    void runProbe(false);
+    void runChecks();
+  }, [runChecks, runProbe]);
+
+  // Opening the page, and every change of URL / key / API, checks again.
   useEffect(() => {
-    discoveryRequestIdRef.current += 1;
-    setDiscoveryState({ phase: "idle" });
+    connSeqRef.current += 1;
+    probeSeqRef.current += 1;
+    knownIdsRef.current = null;
+    setNewIds([]);
+    setChecks({});
+    setCandidateChecks({});
     setDiscoveryQuery("");
     setSelectedModelIds([]);
-  }, [name, provider.baseUrl, provider.api, provider.apiKey]);
+    setProbe(null);
+    setDiscoveryState({ phase: "idle" });
+    const first = firstRunRef.current;
+    firstRunRef.current = false;
+    const timer = setTimeout(runAll, first ? 0 : 800);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, connKey]);
 
-  const handleDiscoverModels = useCallback(async () => {
-    if (discoveryState.phase === "loading") return;
-    const requestId = ++discoveryRequestIdRef.current;
-    setDiscoveryState({ phase: "loading" });
-    setSelectedModelIds([]);
-    try {
-      const res = await fetch("/api/models-config/discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerName: name, provider: { ...provider, models: undefined } }),
-      });
-      const data = await res.json() as { models?: DiscoveredModel[]; endpoint?: string; error?: string };
-      if (requestId !== discoveryRequestIdRef.current) return;
-      if (!res.ok || data.error || !data.models) {
-        setDiscoveryState({ phase: "error", message: data.error ?? `HTTP ${res.status}` });
-        return;
-      }
-      setDiscoveryState({ phase: "success", models: data.models, endpoint: data.endpoint ?? provider.baseUrl ?? "" });
-    } catch (error) {
-      if (requestId !== discoveryRequestIdRef.current) return;
-      setDiscoveryState({ phase: "error", message: error instanceof Error ? error.message : String(error) });
+  // The upstream list refreshes every minute while the page is open.
+  useEffect(() => {
+    const timer = setInterval(() => {
+      if (!document.hidden) void runProbe(true);
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [runProbe]);
+
+  // "查看" on a new-models hint opens this page with those models ticked.
+  useEffect(() => {
+    const take = (detail: unknown) => {
+      const wanted = detail as { provider?: string; ids?: string[] } | null;
+      if (!wanted || wanted.provider !== name || !Array.isArray(wanted.ids)) return;
+      const listed = discoveryState.phase === "success" ? new Set(discoveryState.models.map((model) => model.id)) : null;
+      if (listed) setSelectedModelIds((cur) => [...new Set([...cur, ...wanted.ids!.filter((id) => listed.has(id))])]);
+      else preselectRef.current = wanted.ids;
+    };
+    const win = window as unknown as { __piwebPreselect?: unknown };
+    if (win.__piwebPreselect) {
+      take(win.__piwebPreselect);
+      win.__piwebPreselect = undefined;
     }
-  }, [discoveryState.phase, name, provider]);
+    const onEvent = (event: Event) => take((event as CustomEvent).detail);
+    window.addEventListener(PRESELECT_EVENT, onEvent);
+    return () => window.removeEventListener(PRESELECT_EVENT, onEvent);
+  }, [discoveryState, name]);
+
+  const handleDiscoverModels = useCallback(() => { void runProbe(false); }, [runProbe]);
 
   const existingModelIds = new Set((provider.models ?? []).map((model) => model.id));
   const discoveredModels = discoveryState.phase === "success" ? discoveryState.models : [];
+
+  /** The entry a ticked upstream model would be added as: the user's preset for it. */
+  const candidateEntry = useCallback((discovered: DiscoveredModel): ModelEntry => {
+    const built = presetModel(discovered, providers as Record<string, ProviderLike>, name);
+    const entry = { ...built.model } as ModelEntry;
+    if (built.api && built.api !== (provider.api ?? "openai-completions")) entry.api = built.api;
+    return entry;
+  }, [name, provider.api, providers]);
+
+  // Ticked models are really called before they can be added.
+  useEffect(() => {
+    if (discoveryState.phase !== "success") return;
+    const pending = discoveryState.models.filter((model) => selectedModelIds.includes(model.id)
+      && !existingModelIds.has(model.id) && !candidateChecks[model.id]);
+    if (!pending.length) return;
+    const tested = providerRef.current;
+    const seq = connSeqRef.current;
+    setCandidateChecks((cur) => ({ ...cur, ...Object.fromEntries(pending.map((model) => [model.id, { state: "run" } as ModelCheck])) }));
+    void pool(pending, 3, async (model) => {
+      const result = await checkModel(name, tested, candidateEntry(model), false);
+      if (seq !== connSeqRef.current) return;
+      setCandidateChecks((cur) => ({ ...cur, [model.id]: result }));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [discoveryState, selectedModelIds]);
+
+  const retryCandidate = (id: string) => setCandidateChecks((cur) => {
+    const next = { ...cur };
+    delete next[id];
+    return next;
+  });
+
   const normalizedDiscoveryQuery = discoveryQuery.trim().toLocaleLowerCase();
   const filteredDiscoveredModels = discoveredModels.filter((model) => !normalizedDiscoveryQuery
     || model.id.toLocaleLowerCase().includes(normalizedDiscoveryQuery)
     || model.name?.toLocaleLowerCase().includes(normalizedDiscoveryQuery));
-  const shownDiscoveredModels = filteredDiscoveredModels.slice(0, 300);
+  const newFirst = [...filteredDiscoveredModels].sort((a, b) => Number(newIds.includes(b.id)) - Number(newIds.includes(a.id)));
+  const shownDiscoveredModels = newFirst.slice(0, 300);
   const selectableShownIds = shownDiscoveredModels
     .filter((model) => !existingModelIds.has(model.id))
     .map((model) => model.id);
-  const selectedCount = selectedModelIds.filter((id) => !existingModelIds.has(id)).length;
+  const selectedNew = selectedModelIds.filter((id) => !existingModelIds.has(id));
+  const passedIds = selectedNew.filter((id) => {
+    const check = candidateChecks[id];
+    return check?.state === "ok" || check?.state === "fix";
+  });
+  const testingCount = selectedNew.filter((id) => !candidateChecks[id] || candidateChecks[id].state === "run").length;
+  const failedCount = selectedNew.length - passedIds.length - testingCount;
   const allShownSelected = selectableShownIds.length > 0
     && selectableShownIds.every((id) => selectedModelIds.includes(id));
   const someShownSelected = !allShownSelected
@@ -417,14 +643,49 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
       : Array.from(new Set([...current, ...selectableShownIds])));
   };
 
+  /** Adds only the ticked models whose real call passed, then saves. */
   const addSelectedModels = () => {
     if (discoveryState.phase !== "success") return;
-    const selected = new Set(selectedModelIds);
-    const additions = discoveryState.models.filter((model) => selected.has(model.id) && !existingModelIds.has(model.id));
+    const providerUrl = trimUrl(provider.baseUrl);
+    const additions: ModelEntry[] = [];
+    for (const model of discoveryState.models) {
+      if (!passedIds.includes(model.id) || existingModelIds.has(model.id)) continue;
+      const entry = candidateEntry(model);
+      const check = candidateChecks[model.id];
+      if (check?.state === "fix") {
+        entry.api = check.api === provider.api ? undefined : check.api;
+        entry.baseUrl = check.baseUrl === providerUrl ? undefined : check.baseUrl;
+      }
+      additions.push(entry);
+    }
     if (additions.length === 0) return;
-    onAddModels(additions);
-    setSelectedModelIds([]);
+    // A provider without models takes the interface its first models need, instead of
+    // every model carrying its own override.
+    let patch: { api?: string; baseUrl?: string } | undefined;
+    if (!(provider.models ?? []).some((model) => model.id.trim())) {
+      const apis = new Set(additions.map((entry) => entry.api ?? provider.api ?? ""));
+      const urls = new Set(additions.map((entry) => trimUrl(entry.baseUrl ?? provider.baseUrl)));
+      if (apis.size === 1 && urls.size === 1) {
+        const [api] = [...apis];
+        const [url] = [...urls];
+        patch = {};
+        if (api && api !== provider.api) patch.api = api;
+        if (url !== providerUrl) patch.baseUrl = url;
+        for (const entry of additions) {
+          delete entry.api;
+          delete entry.baseUrl;
+        }
+      }
+    }
+    onAddModels(additions, patch);
+    setSelectedModelIds((cur) => cur.filter((id) => !passedIds.includes(id)));
+    setNewIds((cur) => cur.filter((id) => !passedIds.includes(id)));
+    setChecks((cur) => ({ ...cur, ...Object.fromEntries(additions.map((entry) => [entry.id, candidateChecks[entry.id]?.state === "fix" ? { state: "ok", at: Date.now() } as ModelCheck : candidateChecks[entry.id]])) }));
+    onAutoSave(additions.map((entry) => entry.id));
   };
+
+  const modelChecks = (provider.models ?? []).map((model) => checks[model.id]).filter((check): check is ModelCheck => !!check);
+  const rowStyle: React.CSSProperties = { minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8 };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -440,6 +701,21 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
         </ConfigDetailHeader>
         <EnabledModelsProviderSwitchNote providerId={name} controller={enabledModels} id={switchNoteId} />
       </div>
+
+      <ProviderCheckLine probe={probe} probing={probing} checks={modelChecks} onRecheck={runAll} />
+      {fixNote && (
+        <AutoCheckNote
+          text={fixNote.text}
+          onUndo={() => {
+            const undo = fixNote.undo;
+            undoneFixRef.current = JSON.stringify([undo.api ?? null, undo.baseUrl ?? null, (undo.models ?? []).map((model) => [model.api ?? null, model.baseUrl ?? null])]);
+            setFixNote(null);
+            onChange(undo);
+            onAutoSave();
+          }}
+          onClose={() => setFixNote(null)}
+        />
+      )}
 
        <Field label={t("i18n.providerName")}>
         <TextInput value={editingName} onChange={onEditingNameChange} placeholder="provider-name" mono />
@@ -461,6 +737,10 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
           placeholder={t("models.apiKeyPlaceholder")} mono />
       </Field>
 
+      {probe && !probe.ok && (
+        <CheckErrorBox title="拉取模型列表失败" error={probe} at={probe.at} onRetry={() => { void runProbe(false); }} />
+      )}
+
       <Field label="API">
         <Select value={provider.api ?? ""} onChange={(v) => set("api", v || undefined)} options={API_OPTIONS} />
       </Field>
@@ -472,29 +752,45 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
         />
       </Field>
 
+      {(provider.models ?? []).some((model) => model.id.trim()) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <div style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 600 }}>已添加的模型（打开页面时自动实际调用一次）</div>
+          <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+            {(provider.models ?? []).filter((model) => model.id.trim()).map((model, index) => (
+              <div key={`${model.id}-${index}`} style={{ ...rowStyle, borderTop: index === 0 ? "none" : "1px solid var(--border)" }}>
+                <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11, color: "var(--text)" }} title={model.id}>
+                  {model.name ?? model.id}
+                  {model.api && <span style={{ color: "var(--text-dim)", fontSize: 10 }}> · {API_LABEL[model.api] ?? model.api}</span>}
+                </span>
+                <CheckBadge check={checks[model.id]} onRetry={() => { void runChecks([model.id]); }} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div style={{ borderTop: "1px solid var(--border)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         {discoveryState.phase !== "success" && (
           <button
             onClick={handleDiscoverModels}
-            disabled={discoveryState.phase === "loading"}
+            disabled={probing}
             style={{
               alignSelf: "flex-start", height: 30, padding: "0 12px", border: "1px solid var(--border)", borderRadius: 5,
-              background: "var(--bg-panel)", color: discoveryState.phase === "loading" ? "var(--text-dim)" : "var(--text-muted)",
-              cursor: discoveryState.phase === "loading" ? "not-allowed" : "pointer", fontSize: 11,
+              background: "var(--bg-panel)", color: probing ? "var(--text-dim)" : "var(--text-muted)",
+              cursor: probing ? "not-allowed" : "pointer", fontSize: 11,
             }}
           >
-            {discoveryState.phase === "loading" ? t("models.discoveryFetching") : t("models.discoveryFetch")}
+            {probing ? t("models.discoveryFetching") : t("models.discoveryFetch")}
           </button>
-        )}
-
-        {discoveryState.phase === "error" && (
-          <div style={{ padding: "7px 9px", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.4 }}>
-            {discoveryState.message}
-          </div>
         )}
 
         {discoveryState.phase === "success" && (
           <>
+            {newIds.length > 0 && (
+              <div style={{ color: AMBER_TEXT, fontSize: 11 }}>
+                上游新增了 {newIds.length} 个模型（标「新」，排在最前）
+              </div>
+            )}
             <input
               value={discoveryQuery}
               onChange={(event) => setDiscoveryQuery(event.target.value)}
@@ -503,7 +799,7 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
               style={{ ...inputStyle, width: "100%", minWidth: 0 }}
             />
 
-            <div style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
+            <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)" }}>
               <label
                 style={{
                   minHeight: 32, padding: "5px 9px", display: "flex", alignItems: "center", gap: 8,
@@ -521,12 +817,14 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
                   style={{ width: 13, height: 13, accentColor: "var(--accent)", flexShrink: 0 }}
                 />
                 {t("models.discoverySelectShown")}
+                <span style={{ marginLeft: "auto", fontWeight: 400, color: "var(--text-dim)" }}>勾选后自动实际调用，通过的才能添加</span>
               </label>
               {shownDiscoveredModels.length === 0 ? (
                 <div style={{ padding: 12, color: "var(--text-dim)", fontSize: 11 }}>{t("models.discoveryNoMatches")}</div>
               ) : shownDiscoveredModels.map((model, index) => {
                 const alreadyAdded = existingModelIds.has(model.id);
                 const checked = selectedModelIds.includes(model.id);
+                const isNew = newIds.includes(model.id);
                 return (
                   <label
                     key={model.id}
@@ -544,10 +842,15 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
                       style={{ width: 13, height: 13, accentColor: "var(--accent)", flexShrink: 0 }}
                     />
                     <span style={{ minWidth: 0, flex: 1 }}>
-                      <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)", fontSize: 11 }}>{model.name ?? model.id}</span>
+                      <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text)", fontSize: 11 }}>
+                        {isNew && <span style={{ color: AMBER_TEXT, fontWeight: 600, marginRight: 4 }}>新</span>}
+                        {model.name ?? model.id}
+                      </span>
                       {model.name && <code style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{model.id}</code>}
                     </span>
-                    {alreadyAdded && <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{t("models.discoveryAdded")}</span>}
+                    {alreadyAdded
+                      ? (checks[model.id] ? <CheckBadge check={checks[model.id]} /> : <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{t("models.discoveryAdded")}</span>)
+                      : checked && <CheckBadge check={candidateChecks[model.id]} onRetry={() => retryCandidate(model.id)} candidate />}
                   </label>
                 );
               })}
@@ -555,18 +858,18 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
 
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
               <span title={discoveryState.endpoint} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10 }}>
-                {filteredDiscoveredModels.length > shownDiscoveredModels.length
-                  ? t("models.discoveryShowing", { shown: shownDiscoveredModels.length, total: filteredDiscoveredModels.length })
-                  : t("models.discoveryFetched", { count: discoveryState.models.length })}
+                {selectedNew.length
+                  ? [testingCount ? `${testingCount} 个测试中` : null, passedIds.length ? `${passedIds.length} 个通过` : null, failedCount ? `${failedCount} 个不通（不会添加）` : null].filter(Boolean).join(" · ")
+                  : filteredDiscoveredModels.length > shownDiscoveredModels.length
+                    ? t("models.discoveryShowing", { shown: shownDiscoveredModels.length, total: filteredDiscoveredModels.length })
+                    : t("models.discoveryFetched", { count: discoveryState.models.length })}
               </span>
               <button
                 onClick={addSelectedModels}
-                disabled={selectedCount === 0}
-                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: 5, background: selectedCount ? "var(--accent)" : "var(--bg-panel)", color: selectedCount ? "var(--accent-contrast)" : "var(--text-dim)", cursor: selectedCount ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
+                disabled={passedIds.length === 0}
+                style={{ height: 28, padding: "0 11px", border: "none", borderRadius: 5, background: passedIds.length ? "var(--accent)" : "var(--bg-panel)", color: passedIds.length ? "var(--accent-contrast)" : "var(--text-dim)", cursor: passedIds.length ? "pointer" : "not-allowed", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap" }}
               >
-                {selectedCount
-                  ? t("models.discoveryAddSelectedCount", { count: selectedCount })
-                  : t("models.discoveryAddSelected")}
+                {passedIds.length ? `添加 ${passedIds.length} 个通过的模型并保存` : t("models.discoveryAddSelected")}
               </button>
             </div>
           </>
@@ -851,14 +1154,23 @@ function ModelDetail({
   model,
   onChange,
   onDelete,
+  record = false,
+  onAutoSave,
 }: {
   providerName: string;
   provider: ProviderEntry;
   model: ModelEntry;
   onChange: (m: ModelEntry) => void;
   onDelete: () => void;
+  /** Keep the result as this provider's latest check (the draft matches what is saved). */
+  record?: boolean;
+  onAutoSave?: () => void;
 }) {
   const [testState, setTestState] = useState<ModelTestState>({ phase: "idle" });
+  /** Set after a wrong API / URL was corrected automatically; survives the re-test. */
+  const [fixNote, setFixNote] = useState<{ text: string; undo: ModelEntry } | null>(null);
+  const undoneFixRef = useRef<string | null>(null);
+  const firstAutoTestRef = useRef(true);
   const { t } = useI18n();
   const [catalogState, setCatalogState] = useState<ModelCatalogState>({ phase: "idle" });
   const [costEditing, setCostEditing] = useState(false);
@@ -904,16 +1216,55 @@ function ModelDetail({
       testState.status !== undefined ? `HTTP ${testState.status}` : null,
     ].filter(Boolean);
     if (testState.phase === "success") {
-       return [t("i18n.quickConnected"), ...meta, testState.responseText || null].filter(Boolean).join(" · ");
+      return [
+        "✓ 实际调用正常",
+        testState.latencyMs !== undefined ? formatMs(testState.latencyMs) : null,
+        testState.at ? `${formatTime(testState.at)} 检测` : null,
+      ].filter(Boolean).join(" · ");
     }
+    if (testState.at) return "✗ 调用失败，原因见下方";
      return [t("i18n.failed"), ...meta, testState.message].filter(Boolean).join(" · ");
   })();
 
+  const runTest = useCallback(async () => {
+    if (!model.id.trim()) return;
+    const requestId = ++testRequestIdRef.current;
+    setTestState({ phase: "testing" });
+    const result = await checkModel(providerName, provider, model, record);
+    if (requestId !== testRequestIdRef.current) return;
+    notifyHealthChanged();
+    if (result.state === "ok") {
+      setTestState({ phase: "success", latencyMs: result.ms, at: result.at });
+      return;
+    }
+    if (result.state === "fix") {
+      const providerUrl = trimUrl(provider.baseUrl);
+      const next: ModelEntry = { ...model, api: result.api === provider.api ? undefined : result.api, baseUrl: result.baseUrl === providerUrl ? undefined : result.baseUrl };
+      if (undoneFixRef.current !== JSON.stringify([model.api ?? null, model.baseUrl ?? null]) && onAutoSave) {
+        const parts = [result.api !== (model.api ?? provider.api) ? `改用 ${API_LABEL[result.api] ?? result.api} 接口` : null, trimUrl(result.baseUrl) !== trimUrl(model.baseUrl ?? provider.baseUrl) ? `把 URL 改为 ${result.baseUrl}` : null].filter(Boolean);
+        setFixNote({ text: `原配置调用失败（${shortError(result.error)}），已自动${parts.join("，")}，并已保存`, undo: model });
+        onChange(next);
+        onAutoSave();
+        return;
+      }
+      setTestState({ phase: "error", message: `当前配置调用失败：${result.error}`, hint: `改用 ${API_LABEL[result.api] ?? result.api} 接口（${result.baseUrl}）可以调通`, at: result.at });
+      return;
+    }
+    if (result.state !== "bad") return;
+    setTestState({ phase: "error", message: result.error, status: result.status, hint: result.hint, detail: result.detail, tried: result.tried, at: result.at });
+  }, [model, onAutoSave, onChange, provider, providerName, record]);
+
+  // Every time the model page opens (and after each edit) it is really called
+  // once, so what the page shows is the current state.
   useEffect(() => {
     testRequestIdRef.current += 1;
     setTestState({ phase: "idle" });
+    const first = firstAutoTestRef.current;
+    firstAutoTestRef.current = false;
+    const timer = setTimeout(() => { void runTest(); }, first ? 0 : 800);
     // An in-flight result belongs to the old draft, including after unmount.
-    return () => { testRequestIdRef.current += 1; };
+    return () => { clearTimeout(timer); testRequestIdRef.current += 1; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerName, provider, model]);
 
   useEffect(() => {
@@ -922,44 +1273,10 @@ function ModelDetail({
     catalogUndoRef.current = null;
   }, [providerName, effectiveBaseUrl, model.id]);
 
-  const handleTest = useCallback(async () => {
-    if (!model.id.trim() || testState.phase === "testing") return;
-    const requestId = ++testRequestIdRef.current;
-    setTestState({ phase: "testing" });
-    try {
-      const res = await fetch("/api/models-config/test", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ providerName, provider, model }),
-      });
-      const d = await res.json() as {
-        ok?: boolean;
-        error?: string;
-        latencyMs?: number;
-        status?: number;
-        responseText?: string;
-      };
-      if (requestId !== testRequestIdRef.current) return;
-      if (!res.ok || !d.ok) {
-        setTestState({
-          phase: "error",
-          message: d.error ?? `HTTP ${res.status}`,
-          latencyMs: d.latencyMs,
-          status: d.status,
-        });
-        return;
-      }
-      setTestState({
-        phase: "success",
-        latencyMs: d.latencyMs,
-        status: d.status,
-        responseText: d.responseText,
-      });
-    } catch (e) {
-      if (requestId !== testRequestIdRef.current) return;
-      setTestState({ phase: "error", message: e instanceof Error ? e.message : String(e) });
-    }
-  }, [model, provider, providerName, testState.phase]);
+  const handleTest = useCallback(() => {
+    if (testState.phase === "testing") return;
+    void runTest();
+  }, [runTest, testState.phase]);
 
   const handleCatalogFill = useCallback(async () => {
     const query = model.id.trim();
@@ -1123,6 +1440,26 @@ function ModelDetail({
           <ConfigButton variant="danger" size="small" onClick={onDelete}>{t("i18n.remove")}</ConfigButton>
         </ConfigDetailActions>
       </ConfigDetailHeader>
+
+      {fixNote && (
+        <AutoCheckNote
+          text={fixNote.text}
+          onUndo={onAutoSave ? () => {
+            undoneFixRef.current = JSON.stringify([fixNote.undo.api ?? null, fixNote.undo.baseUrl ?? null]);
+            setFixNote(null);
+            onChange(fixNote.undo);
+            onAutoSave();
+          } : undefined}
+          onClose={() => setFixNote(null)}
+        />
+      )}
+      {testState.phase === "error" && (
+        <CheckErrorBox
+          error={{ error: testState.message, hint: testState.hint, detail: testState.detail, status: testState.status, tried: testState.tried }}
+          at={testState.at}
+          onRetry={handleTest}
+        />
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
         <Field label="ID *"><TextInput value={model.id} onChange={(v) => set("id", v)} placeholder="model-id" mono /></Field>
@@ -1956,6 +2293,18 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
    * applies it like every other visible edit; Rename applies it right away.
    */
   const [providerNameDraft, setProviderNameDraft] = useState<{ provider: string; name: string } | null>(null);
+  /** models.json as last read or written: checks only keep results for what is saved. */
+  const [savedConfig, setSavedConfig] = useState<ModelsJson>({ providers: {} });
+  /** Automatic corrections and added models are saved right away. */
+  const [autoSaveTick, setAutoSaveTick] = useState(0);
+  const pendingEnableRef = useRef<{ provider: string; ids: string[] } | null>(null);
+  const requestAutoSave = useCallback((provider: string, enableIds?: string[]) => {
+    if (enableIds?.length) {
+      const previous = pendingEnableRef.current?.provider === provider ? pendingEnableRef.current.ids : [];
+      pendingEnableRef.current = { provider, ids: [...previous, ...enableIds] };
+    }
+    setAutoSaveTick((n) => n + 1);
+  }, []);
 
   const refreshAuthProviders = useCallback(() => {
     fetch("/api/auth/providers")
@@ -1979,6 +2328,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
       .then((d) => {
         const normalized = d.providers ? d : { ...d, providers: {} };
         setConfig(normalized);
+        setSavedConfig(normalized);
         savedProvidersRef.current = new Set(Object.keys(normalized.providers ?? {}));
         savedModelIdsRef.current = savedModelIds(normalized);
         const keys = Object.keys(normalized.providers ?? {});
@@ -2089,7 +2439,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
     });
   }, []);
 
-  const addDiscoveredModels = useCallback((providerName: string, discovered: DiscoveredModel[]) => {
+  const addDiscoveredModels = useCallback((providerName: string, discovered: ModelEntry[], patch?: { api?: string; baseUrl?: string }) => {
     setConfig((prev) => {
       const known = new Set((prev.providers?.[providerName]?.models ?? []).map((model) => model.id));
       trackAddedModels(
@@ -2106,7 +2456,7 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
         // Keeps the capabilities the upstream published (#856).
         models.push({ ...discoveredModel });
       }
-      return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, models } } };
+      return { ...prev, providers: { ...(prev.providers ?? {}), [providerName]: { ...provider, ...(patch ?? {}), models } } };
     });
   }, []);
 
@@ -2242,7 +2592,15 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
         savedProvidersRef.current = new Set(Object.keys(draft.providers ?? {}));
         savedModelIdsRef.current = savedModelIds(draft);
         renamesRef.current.clear();
+        setSavedConfig(draft);
         enabledModels.resync(renames, modelRenames);
+        // Added models are switched on, unless every model is already enabled.
+        const enable = pendingEnableRef.current;
+        pendingEnableRef.current = null;
+        if (enable && enabledModels.view && !enabledModels.view.allEnabled) {
+          const finalName = providerNameDraft && pendingName && providerNameDraft.provider === enable.provider ? pendingName : enable.provider;
+          if (draft.providers?.[finalName]) enabledModels.setModels("auto-add", enable.ids.map((id) => `${finalName}/${id}`), true);
+        }
       }
     } catch (e) {
       if (e instanceof ProviderEntryError) {
@@ -2255,6 +2613,13 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
       setSaving(false);
     }
   }, [applyProviderRename, config, enabledModels, loadError, providerNameDraft, t]);
+
+  const handledAutoSaveRef = useRef(0);
+  useEffect(() => {
+    if (autoSaveTick === handledAutoSaveRef.current || saving || loadError) return;
+    handledAutoSaveRef.current = autoSaveTick;
+    void handleSave();
+  }, [autoSaveTick, handleSave, loadError, saving]);
 
   const providers = Object.entries(config.providers ?? {}).filter(([id, entry]) => {
     if (!isOverridesOnly(entry)) return true;
@@ -2296,8 +2661,11 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
           onEditingNameChange={(n) => setProviderNameDraft(n === selection.name ? null : { provider: selection.name, name: n })}
           onRename={(n) => renameProvider(selection.name, n)}
           onDelete={() => deleteProvider(selection.name)}
-          onAddModels={(models) => addDiscoveredModels(selection.name, models)}
+          onAddModels={(models, patch) => addDiscoveredModels(selection.name, models, patch)}
           enabledModels={enabledModels}
+          providers={config.providers ?? {}}
+          saved={savedConfig.providers?.[selection.name]}
+          onAutoSave={(ids) => requestAutoSave(selection.name, ids)}
         />
       );
     }
@@ -2312,6 +2680,14 @@ export function ModelsConfig({ onClose, embedded = false, cwd = null }: {
         model={model}
         onChange={(m) => updateModel(selection.providerName, selection.index, m)}
         onDelete={() => removeModel(selection.providerName, selection.index)}
+        record={(() => {
+          const savedProvider = savedConfig.providers?.[selection.providerName];
+          const savedModel = savedProvider?.models?.find((entry) => entry.id === model.id);
+          return !!savedModel && savedProvider?.apiKey === provider.apiKey
+            && trimUrl(savedModel.baseUrl ?? savedProvider?.baseUrl) === trimUrl(model.baseUrl ?? provider.baseUrl)
+            && (savedModel.api ?? savedProvider?.api) === (model.api ?? provider.api);
+        })()}
+        onAutoSave={() => requestAutoSave(selection.providerName)}
       />
     );
   })();

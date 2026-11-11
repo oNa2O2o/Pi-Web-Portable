@@ -14,19 +14,26 @@
 - 停用前端插件：把文件改名成 `xxx.js.disabled`，或者在文件名前加 `_`
 - 修改前端插件后刷新页面就能生效；新增或删除插件文件、修改 `server/` 或加载器后，要重启 Pi Web
 
-## model-quick-add.js 快速添加模型 + server/model-health 自动检测
+## 模型自动检测：Pi Web 模型设置页 + server/model-health + model-health-ui.js
 
-- 模型设置里点「添加 Provider」：只填 Base URL 和 API Key，停手 0.8 秒后自动拉取全部模型（弹框开着时每 60 秒刷新，新出现的标「新」）
-- 填错时显示具体原因：URL 格式、域名解析不到、连接被拒、超时、证书、Key 无效（401）、余额不足、没权限（403）、路径不对（404）、填成了官网（返回网页）等，并列出试过的地址
-- 勾选的模型自动真实测试（每个只花几个 token，同时测 3 个），自动匹配接口类型（Claude 先试 Anthropic，GPT/Gemini 先试 Responses，再试 Chat Completions）和带不带 `/v1`；列表里显示 ✓ 耗时 或 ✗ 原因，点 ✗ 重测
-- 只保存测试通过的模型；参数套用 `~/.pi/agent/models.json` 里同名模型或同系列最新模型的预设；同一个 URL+Key+接口已有 Provider 时直接加进去
-- 底部「高级：手动配置」回到原版添加界面
-- 后台服务每 10 分钟拉一次每个已启用 Provider 的模型列表（不花 token），每 6 小时对每个已启用模型真实调用一次；结果存在 `~/.pi/agent/model-health.json`
+功能直接做在 Pi Web 原有的模型设置页面里（`components/ModelsConfig.tsx`、`components/model-auto-check.ts`、`components/ModelAutoCheckUi.tsx`），没有另外的弹框。新建和编辑 Provider 用的是同一个页面，所以两种情况都生效：
+
+- **Provider 页面**：打开就自动拉全部模型、对已添加的每个模型实际调用一次（每个只花几个 token，同时 3 个）。改 URL、Key、API、Headers 后停手 0.8 秒再测一遍。页面开着时每 60 秒刷新模型列表，新出现的标「新」并排在最前
+  - 顶部一行显示结果：连接是否正常、上游有几个模型、已添加的模型几个可用，旁边「立即检测」
+  - 拉不到模型列表时，在 API Key 下方显示具体原因：URL 格式、域名解析不到、连接被拒、超时、证书、Key 无效（401）、余额不足、没权限（403）、路径不对（404）、填成了官网（返回网页）等，以及服务商原话和试过的地址
+  - 「已添加的模型」列表：每个模型 ✓ 耗时，或 ✗ 原因（悬停看详情，点 ✗ 重测）
+  - **自动修正**：现在填的接口调用失败、换一种接口类型或 URL 写法（带不带 `/v1`）能调通时，自动改好并保存；所有模型都要同样改时改 Provider 的「API」栏，否则只给那几个模型单独设置 `api` / `baseUrl`。页面上一行字说明改了什么，可「撤销」（撤销后不再自动改，直到你改了连接设置）
+  - 模型列表里勾选的模型自动实际调用，**只有通过的能添加**；按钮「添加 N 个通过的模型并保存」直接写入 models.json，并在启用列表是自定义范围时把它们打开。参数套用 models.json 里同名模型或同系列（Claude / GPT / Gemini）最新模型的预设
+  - 新建的 Provider（`new-provider`）拉到模型后，名称自动按域名起（`api.chiyi.cc` → `chiyi`）
+- **模型页面**：打开就实际调用一次（之后每次编辑停手 0.8 秒再测），显示 ✓ 耗时或具体失败原因；接口填错时同样自动修正并保存，可撤销
+- 测试结果都存进 `~/.pi/agent/model-health.json`（只记录和已保存配置一致的那次测试），左栏小圆点和右上角提醒马上更新
+- 后台服务 `server/model-health` 每 10 分钟拉一次每个已启用 Provider 的模型列表（不花 token），每 6 小时对每个已启用模型真实调用一次
+- `web/model-health-ui.js` 负责页面上的提醒：
   - 模型设置左栏：Provider 和模型旁的小圆点（绿/黄/红），悬停看原因和检测时间；底部有「立即检测」
-  - 上游出现新模型：左栏顶部提示「有 N 个新模型可添加」，点「查看」才添加，「忽略」不再提示
+  - 上游出现新模型：左栏顶部提示「有 N 个新模型可添加」，点「查看」打开那个 Provider 的页面并勾好这些模型，「忽略」不再提示
   - Provider 变成失败：右上角一行小字，不会自动消失，点 × 关闭；恢复正常后自动消失
-- 环境变量 `PIWEB_HEALTH_CONN_MINUTES`、`PIWEB_HEALTH_CALL_MINUTES` 可改检测间隔
-- 设置项（localStorage）：`piweb.quickadd.disabled=1` 关闭插件；`piweb.health.alerts=off` 不显示右上角提醒
+- 服务没运行时（比如普通 pi-web 安装），页面退回 Pi Web 自带的拉取 / 测试接口，报错没那么具体，也不会自动修正
+- 环境变量 `PIWEB_HEALTH_CONN_MINUTES`、`PIWEB_HEALTH_CALL_MINUTES` 可改检测间隔；localStorage `piweb.health.alerts=off` 不显示右上角提醒
 
 ## voice-input.js 长按语音输入
 
