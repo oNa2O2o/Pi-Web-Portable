@@ -29,11 +29,11 @@ for (let i = 0; i < 60; i++) {
 if (!status) fail('health service did not start within 60 seconds');
 if (typeof status.providers !== 'object' || !status.conn || !status.call) fail('unexpected /status shape: ' + JSON.stringify(status).slice(0, 200));
 
-// Port 9 on loopback is closed on CI runners: the error must be specific, not "fetch failed".
+// A closed high port on loopback: the error must be specific, not "fetch failed".
 const probe = await (await fetch(api + '/probe', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ baseUrl: 'http://127.0.0.1:9', apiKey: 'sk-test' }),
+  body: JSON.stringify({ baseUrl: 'http://127.0.0.1:65530', apiKey: 'sk-test' }),
 })).json();
 if (probe.ok !== false || !probe.error || /fetch failed/i.test(probe.error)) fail('probe error not specific: ' + JSON.stringify(probe));
 
