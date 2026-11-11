@@ -19,6 +19,7 @@
 /out/
 /.build-home/
 /portable/.build-stage/
+/portable/.build-stage-mac/
 /portable/dist/
 /portable/launcher/*.test.exe
 

@@ -180,10 +180,61 @@ function patchResponse(res) {
   };
 }
 
+// HTTP requests to /__piweb-plugins/api/<name>/... are proxied to that server plugin.
+// Same-origin only; when a web password is set, requests from other machines must carry
+// a valid Pi Web session (checked by asking Pi Web itself), because plugin routes bypass its auth.
+const API_ROUTE = ROUTE + 'api/';
+const isLoopback = (addr) => /^(127\.|::1$|::ffff:127\.)/.test(String(addr || ''));
+
+function sameOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true;
+  try { return new URL(origin).host === req.headers.host; } catch { return false; }
+}
+
+function checkSession(req) {
+  if (!process.env.PI_WEB_PASSWORD || isLoopback(req.socket && req.socket.remoteAddress)) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const headers = { host: req.headers.host || '127.0.0.1' };
+    if (req.headers.cookie) headers.cookie = req.headers.cookie;
+    if (req.headers.authorization) headers.authorization = req.headers.authorization;
+    const r = http.request({ host: '127.0.0.1', port: req.socket.localPort, path: '/api/models/enabled', headers, timeout: 5000 }, (res) => {
+      res.resume();
+      resolve(res.statusCode === 200);
+    });
+    r.on('error', () => resolve(false));
+    r.on('timeout', () => { r.destroy(); resolve(false); });
+    r.end();
+  });
+}
+
+function proxyApi(req, res) {
+  const name = decodeURIComponent(req.url.slice(API_ROUTE.length).split(/[/?]/)[0]);
+  const deny = (code, text) => { res.statusCode = code; res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ error: text })); };
+  if (!/^[\w-]+$/.test(name) || !sameOrigin(req)) return deny(403, 'forbidden');
+  checkSession(req).then((ok) => {
+    if (!ok) return deny(401, 'Authentication required');
+    const state = services.get(name);
+    if (!state || !state.port) return deny(503, `service ${name} not running`);
+    const headers = { ...req.headers };
+    delete headers.cookie;
+    delete headers.authorization;
+    const upstream = http.request({ host: '127.0.0.1', port: state.port, method: req.method, path: req.url, headers }, (up) => {
+      res.writeHead(up.statusCode || 502, up.headers);
+      up.pipe(res);
+    });
+    upstream.on('error', (error) => { if (!res.headersSent) deny(502, String(error.message || error)); else res.destroy(); });
+    req.pipe(upstream);
+  });
+}
+
 function wrapListener(listener) {
   return function piwebPluginListener(req, res) {
     try {
       const url = req.url || '';
+      if (url.startsWith(API_ROUTE)) {
+        return proxyApi(req, res);
+      }
       if (url.startsWith(ROUTE) && (req.method === 'GET' || req.method === 'HEAD')) {
         return servePlugin(req, res);
       }
@@ -220,6 +271,8 @@ function startService(name) {
   const { fork } = require('node:child_process');
   const env = { ...process.env };
   delete env.NODE_OPTIONS;
+  // Let fetch() in plugins honour HTTP(S)_PROXY like the rest of the system.
+  if ((env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy) && !env.NODE_USE_ENV_PROXY) env.NODE_USE_ENV_PROXY = '1';
   const child = fork(entry, [], {
     cwd: path.dirname(entry), env, execArgv: [], windowsHide: true,
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
@@ -227,6 +280,8 @@ function startService(name) {
   state.child = child;
   state.port = 0;
   child.on('message', msg => { if (msg && msg.type === 'listening') state.port = msg.port; });
+  // Tell the plugin where Pi Web itself listens, so it can call Pi Web's own API.
+  if (hostPort) try { child.send({ type: 'host', port: hostPort }); } catch { /* ignore */ }
   child.on('exit', code => {
     state.child = null;
     state.port = 0;
@@ -243,6 +298,12 @@ function startService(name) {
 }
 
 let stopping = false;
+let hostPort = 0;
+function announceHostPort(port) {
+  if (!port || hostPort) return;
+  hostPort = port;
+  for (const s of services.values()) try { s.child && s.child.connected && s.child.send({ type: 'host', port }); } catch { /* ignore */ }
+}
 function startServices() {
   let names = [];
   try {
@@ -296,6 +357,7 @@ function install() {
       }
       return origEmit.apply(this, arguments);
     };
+    server.once('listening', () => { try { announceHostPort(server.address().port); } catch { /* ignore */ } });
     // Node only hands out upgrades when an 'upgrade' listener exists.
     server.on('upgrade', (req, socket) => { if (server.listenerCount('upgrade') === 1) socket.destroy(); });
     if (index < 0) {

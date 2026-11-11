@@ -73,6 +73,8 @@ try {
   if (Test-Path -LiteralPath (Join-Path $packageDir "app\plugins\piweb-plugin-loader.cjs")) {
     & $expectedNodePath (Join-Path $PSScriptRoot "verify-voice-input.mjs") "$Port"
     if ($LASTEXITCODE -ne 0) { throw "Portable voice input verification failed." }
+    & $expectedNodePath (Join-Path $PSScriptRoot "verify-model-health.mjs") "$Port"
+    if ($LASTEXITCODE -ne 0) { throw "Portable model health verification failed." }
   }
 
   Write-Host "Portable smoke test passed: HTTP $statusCode, Node.js $runtimeNodeVersion, PID $nodePid"

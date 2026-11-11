@@ -1,4 +1,4 @@
-name: Windows portable release
+name: Portable release (Windows + macOS)
 
 on:
   workflow_dispatch:
@@ -126,22 +126,81 @@ jobs:
             portable/dist/Pi-Web-Portable-win-x64.exe.sha256
           if-no-files-found: error
 
+  build-mac:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.20.0
+          cache: npm
+
+      - name: Resolve portable version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.portable_version }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="${GITHUB_REF_NAME#portable-v}"; else version="$INPUT_VERSION"; fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Bad version: $version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install build dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build macOS portable package
+        run: |
+          chmod +x scripts/build-portable-mac.sh scripts/test-portable-mac.sh
+          scripts/build-portable-mac.sh --version "${{ steps.version.outputs.version }}" --repository "$GITHUB_REPOSITORY" \
+            --output "$RUNNER_TEMP/mac/Pi-Web-Portable" --archive-dir portable/dist
+
+      - name: Smoke test the unpacked zip
+        run: |
+          rm -rf "$RUNNER_TEMP/mac-unzip" && mkdir -p "$RUNNER_TEMP/mac-unzip"
+          ditto -x -k portable/dist/pi-web-portable-mac-arm64.zip "$RUNNER_TEMP/mac-unzip"
+          scripts/test-portable-mac.sh "$RUNNER_TEMP/mac-unzip/Pi-Web-Portable" 31879
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pi-web-portable-mac-arm64-${{ steps.version.outputs.version }}
+          path: |
+            portable/dist/pi-web-portable-mac-arm64.zip
+            portable/dist/pi-web-portable-mac-arm64.zip.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [build, build-mac]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
       - name: Publish GitHub Release
         if: github.ref_type == 'tag'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ github.ref_name }}
         run: |
           $assets = @(
-            "portable/dist/Pi-Web-Portable-win-x64.exe",
-            "portable/dist/Pi-Web-Portable-win-x64.exe.sha256",
-            "portable/dist/pi-web-portable-win-x64.zip",
-            "portable/dist/pi-web-portable-win-x64.zip.sha256"
+            "dist/Pi-Web-Portable-win-x64.exe",
+            "dist/Pi-Web-Portable-win-x64.exe.sha256",
+            "dist/pi-web-portable-win-x64.zip",
+            "dist/pi-web-portable-win-x64.zip.sha256",
+            "dist/pi-web-portable-mac-arm64.zip",
+            "dist/pi-web-portable-mac-arm64.zip.sha256"
           )
+          foreach ($a in $assets) { if (-not (Test-Path $a)) { throw "Missing release asset: $a" } }
+          $version = $env:VERSION.Substring(10)
           gh release view "$env:GITHUB_REF_NAME" --repo "$env:GITHUB_REPOSITORY" *> $null
           if ($LASTEXITCODE -eq 0) {
             gh release upload "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --clobber
           } else {
-            gh release create "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable ${{ steps.version.outputs.version }}" --notes "Windows x64 便携版。推荐下载单文件 Pi-Web-Portable-win-x64.exe 并双击运行：首次运行安装到 %LOCALAPPDATA%\Pi-Web-Portable，之后直接启动；也可以下载 ZIP 解压后双击 Pi-Web-Portable.exe。启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。"
+            gh release create "$env:GITHUB_REF_NAME" @assets --repo "$env:GITHUB_REPOSITORY" --verify-tag --title "Pi Web Portable $version" --notes "Windows x64：推荐下载单文件 Pi-Web-Portable-win-x64.exe 并双击运行：首次运行安装到 %LOCALAPPDATA%\Pi-Web-Portable，之后直接启动；也可以下载 ZIP 解压后双击 Pi-Web-Portable.exe。启动器会自动检查 portable-v* Release，并在 SHA256 校验通过后更新。`n`nmacOS（Apple 芯片）：下载 pi-web-portable-mac-arm64.zip，解压后双击「Pi Web.command」（第一次右键 → 打开）。有新版本时 Pi Web 会提示，下载新 ZIP 替换文件夹即可，数据在 ~/.pi/agent 不受影响。"
           }
           if ($LASTEXITCODE -ne 0) { throw "Release publication failed" }

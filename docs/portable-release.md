@@ -1,4 +1,4 @@
-# Windows portable release
+# Portable release (Windows and macOS)
 
 Every build must preserve [the local upgrade requirements](upgrade-requirements.md),
 including Claude continuation with OpenAI-origin tool history and keeping the
@@ -6,6 +6,14 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.9.0 adds a macOS (Apple silicon) package and the model quick-add/health
+plugins: filling in a Base URL and API key lists every model, the checked ones
+are tested with a real call and the API type and URL form are matched
+automatically, and a background service checks every enabled provider every
+10 minutes (model list) and every 6 hours (a few-token call), shows dots in
+the Models panel, a small alert that stays until closed when one fails, and
+offers new upstream models to add. The voice input "no speech" notice is now a
+small pill at the top. Portable
 1.8.1 adds sidebar folder drag-reordering, a "+" on a folder row that files
 the new session into it, and archiving a folder with its sessions. Portable
 1.8.0 bundles Pi Web 0.15.0 (pi 1.5.0, Next 16.4.4): side chats, quoting a
@@ -41,7 +49,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.8.1 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.9.0 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -93,7 +101,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.8.1 `
+  -ExpectedVersion 1.9.0 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -145,3 +153,25 @@ do not inherit it. It:
 The build installs the service dependencies with `npm ci` and downloads the
 X-ASR zh/en streaming model (~160 MB) into `portable.voice-cache`, verifying each
 file by SHA256. The Pi Web application source is not modified.
+
+## macOS (Apple silicon)
+
+Built on macOS arm64 (the release workflow's `build-mac` job on `macos-15`):
+
+```bash
+scripts/build-portable-mac.sh --version 1.9.0
+scripts/test-portable-mac.sh portable/dist/mac/Pi-Web-Portable
+```
+
+The zip `pi-web-portable-mac-arm64.zip` holds one folder `Pi-Web-Portable` with
+`Pi Web.command` (`portable/mac/Pi Web.command`, double-click to start; `--stop`,
+`--restart`, `--no-open`, `PI_WEB_PORT`), `app/` and `runtime/node`. The launcher
+clears the download quarantine flag once so the sherpa-onnx native module loads,
+starts Node in its own session so closing Terminal keeps it running, and sets
+`PI_WEB_INSTALL_ROOT` and `PI_WEB_RESTART_COMMAND` so the restart button works.
+The manifest's `assetName` is the mac zip, so update notices compare against mac
+assets; applying an update is manual (replace the folder; data stays in
+`~/.pi/agent`). The package is not signed or notarized.
+
+The release is published by the `publish` job only after both the Windows and the
+macOS jobs pass, with all six assets.

@@ -1,17 +1,32 @@
 # Pi Web 插件
 
-便携版启动器 `Pi-Web-Portable.exe` 发现 `app\plugins\piweb-plugin-loader.cjs` 时，会通过 `NODE_OPTIONS=--require` 预加载它（源码在仓库 `portable/plugins`，打包时复制到 `app\plugins`）。
-加载器做三件事：
+便携版启动器（Windows 是 `Pi-Web-Portable.exe`，macOS 是 `Pi Web.command`）发现 `app/plugins/piweb-plugin-loader.cjs` 时，会通过 `NODE_OPTIONS=--require` 预加载它（源码在仓库 `portable/plugins`，打包时复制到 `app/plugins`）。
+加载器做四件事：
 
 1. 把 `web/*.js` 自动注入到 Pi Web 页面里（访问路径是 `/__piweb-plugins/<文件名>`）
 2. 为 `server/<名字>/server.cjs` 启动一个后台子进程（随 Pi Web 一起启动和退出，崩溃后会自动重启）
 3. 把 `/__piweb-plugins/ws/<名字>` 上的 WebSocket 请求转发给对应的后台子进程
+4. 把 `/__piweb-plugins/api/<名字>/...` 上的 HTTP 请求转发给对应的后台子进程（只接受同源请求；设了 `PI_WEB_PASSWORD` 时非本机访问要先登录）
 
 它不修改 Pi Web 应用代码。
 
 - 新增前端插件：把 `.js` 文件放进 `web/` 目录
 - 停用前端插件：把文件改名成 `xxx.js.disabled`，或者在文件名前加 `_`
 - 修改前端插件后刷新页面就能生效；新增或删除插件文件、修改 `server/` 或加载器后，要重启 Pi Web
+
+## model-quick-add.js 快速添加模型 + server/model-health 自动检测
+
+- 模型设置里点「添加 Provider」：只填 Base URL 和 API Key，停手 0.8 秒后自动拉取全部模型（弹框开着时每 60 秒刷新，新出现的标「新」）
+- 填错时显示具体原因：URL 格式、域名解析不到、连接被拒、超时、证书、Key 无效（401）、余额不足、没权限（403）、路径不对（404）、填成了官网（返回网页）等，并列出试过的地址
+- 勾选的模型自动真实测试（每个只花几个 token，同时测 3 个），自动匹配接口类型（Claude 先试 Anthropic，GPT/Gemini 先试 Responses，再试 Chat Completions）和带不带 `/v1`；列表里显示 ✓ 耗时 或 ✗ 原因，点 ✗ 重测
+- 只保存测试通过的模型；参数套用 `~/.pi/agent/models.json` 里同名模型或同系列最新模型的预设；同一个 URL+Key+接口已有 Provider 时直接加进去
+- 底部「高级：手动配置」回到原版添加界面
+- 后台服务每 10 分钟拉一次每个已启用 Provider 的模型列表（不花 token），每 6 小时对每个已启用模型真实调用一次；结果存在 `~/.pi/agent/model-health.json`
+  - 模型设置左栏：Provider 和模型旁的小圆点（绿/黄/红），悬停看原因和检测时间；底部有「立即检测」
+  - 上游出现新模型：左栏顶部提示「有 N 个新模型可添加」，点「查看」才添加，「忽略」不再提示
+  - Provider 变成失败：右上角一行小字，不会自动消失，点 × 关闭；恢复正常后自动消失
+- 环境变量 `PIWEB_HEALTH_CONN_MINUTES`、`PIWEB_HEALTH_CALL_MINUTES` 可改检测间隔
+- 设置项（localStorage）：`piweb.quickadd.disabled=1` 关闭插件；`piweb.health.alerts=off` 不显示右上角提醒
 
 ## voice-input.js 长按语音输入
 

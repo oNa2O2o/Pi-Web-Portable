@@ -64,10 +64,10 @@
     .piweb-voice-pick:hover{background:rgba(127,127,127,.14)}
     .piweb-voice-pick.is-current{font-weight:600}
     .piweb-voice-pick .piweb-voice-meter{margin-top:4px}
-    .piweb-voice-toast{position:fixed;z-index:2147483000;left:50%;bottom:96px;transform:translateX(-50%);
-      padding:8px 14px;border-radius:10px;background:rgba(17,24,39,.92);color:#fff;
-      font:13px/1.5 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;pointer-events:none;
-      max-width:calc(100vw - 32px);transition:opacity .3s}
+    .piweb-voice-toast{position:fixed;z-index:2147483000;left:50%;top:10px;transform:translateX(-50%);
+      padding:3px 10px;border-radius:999px;background:rgba(17,24,39,.78);color:#fff;
+      font:12px/1.5 system-ui,"Segoe UI","Microsoft YaHei",sans-serif;pointer-events:none;
+      max-width:min(420px,calc(100vw - 32px));white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:opacity .3s}
     textarea.piweb-voice-active{outline:2px solid rgba(239,68,68,.55)!important;outline-offset:-2px}
     @keyframes piweb-voice-pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}`;
   document.head.appendChild(style);
@@ -516,11 +516,9 @@
     if (s.error === 'no-engine') return toast('本地识别服务没有运行，当前浏览器也不支持在线识别', 6000);
     if (s.error && ERRORS[s.error]) return toast(ERRORS[s.error], 6000);
     if (s.error === 'local-disconnected') return toast('本地识别服务断开了，请重试', 5000);
-    if (s.micLabel && s.peak < SILENT_LEVEL) {
-      return toast('麦克风「' + s.micLabel + '」没有收到声音。可能用错了麦克风：按住 Alt 再长按输入框，切换成你正在用的麦克风', 8000);
-    }
-    if (s.error) return toast('语音识别出错：' + s.error, 6000);
-    toast('没有识别出文字。请按住后看到红点再说，说完再松开', 5000);
+    if (s.micLabel && s.peak < SILENT_LEVEL) return toast('麦克风没收到声音（Alt+长按可换麦克风）', 2000);
+    if (s.error) return toast('语音识别出错：' + s.error, 4000);
+    toast('没识别到文字', 1500);
   }
 
   // ---------- live text in the input box (works with React controlled textarea) ----------
