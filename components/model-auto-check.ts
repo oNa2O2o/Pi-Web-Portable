@@ -294,6 +294,69 @@ export function presetModel(discovered: DiscoveredModel, providers: Record<strin
   return { model, api: template?.api ?? FAMILY_APIS[wanted][0] };
 }
 
+// ---------- balance ----------
+
+export interface BalanceUsage { cost?: number; requests?: number }
+export interface BalanceInfo {
+  ok: boolean;
+  kind?: string;
+  kindLabel?: string;
+  balance?: number;
+  unit?: string;
+  plan?: string;
+  unlimited?: boolean;
+  today?: BalanceUsage;
+  total?: BalanceUsage;
+  daily?: Array<BalanceUsage & { date: string }>;
+  models?: Array<BalanceUsage & { model: string }>;
+  at?: number;
+  stale?: boolean;
+  code?: string;
+  error?: string;
+  hint?: string;
+  sameAccount?: string[];
+  lowBalance?: number;
+}
+
+const CURRENCY: Record<string, string> = { USD: "$", CNY: "¥", RMB: "¥", EUR: "€", GBP: "£", JPY: "¥" };
+
+/** Money in the unit the service reports: $242.03, ¥12.50, 3.10 HKD. */
+export function formatMoney(value?: number, unit?: string) {
+  if (value === undefined || !Number.isFinite(value)) return "—";
+  const u = String(unit || "USD").toUpperCase();
+  const text = Math.abs(value).toFixed(2);
+  const sign = value < 0 ? "-" : "";
+  return CURRENCY[u] ? `${sign}${CURRENCY[u]}${text}` : `${sign}${text} ${u}`;
+}
+
+export type BalanceLevel = "ok" | "low" | "negative" | "none";
+export function balanceLevel(info?: BalanceInfo | null): BalanceLevel {
+  if (!info?.ok || info.unlimited || info.balance === undefined) return "none";
+  if (info.balance < 0) return "negative";
+  return info.balance < (info.lowBalance ?? 5) ? "low" : "ok";
+}
+
+export function balanceText(info?: BalanceInfo | null) {
+  if (!info?.ok) return "";
+  if (info.unlimited) return "不限额";
+  return formatMoney(info.balance, info.unit);
+}
+
+/**
+ * Reads a provider's balance through the health service. Pass `provider` to use
+ * the page's current (maybe unsaved) URL and key, or null for the saved provider.
+ * `maxAgeMs` reuses a result that is at most that old.
+ */
+export async function fetchBalance(providerName: string, provider: ProviderLike | null, maxAgeMs = 0): Promise<BalanceInfo | null> {
+  const body: Record<string, unknown> = { provider: providerName, maxAgeMs };
+  if (provider) Object.assign(body, { baseUrl: trimUrl(provider.baseUrl), apiKey: provider.apiKey ?? "", headers: provider.headers });
+  return health<BalanceInfo>("/balance", body);
+}
+
+export async function setLowBalance(value: number): Promise<boolean> {
+  return (await health<unknown>("/settings", { lowBalance: value })) !== null;
+}
+
 /** Runs `fn` over `items`, at most `limit` at a time. */
 export async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
   let next = 0;

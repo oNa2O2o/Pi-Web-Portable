@@ -35,6 +35,16 @@
 - 服务没运行时（比如普通 pi-web 安装），页面退回 Pi Web 自带的拉取 / 测试接口，报错没那么具体，也不会自动修正
 - 环境变量 `PIWEB_HEALTH_CONN_MINUTES`、`PIWEB_HEALTH_CALL_MINUTES` 可改检测间隔；localStorage `piweb.health.alerts=off` 不显示右上角提醒
 
+### 中转余额
+
+- 用模型的同一个 Key 查余额，不花额度；自动识别 Sub2API（`/v1/usage`）、New API / One API（`/api/usage/token`）、OpenAI 账单接口，以及 OpenRouter、DeepSeek、Moonshot、SiliconFlow。查不到时显示「这个服务商不支持查余额」
+- 金额单位跟着接口走（$、¥ 或写明单位）
+- **对话页面**：输入框下方当前模型旁显示「供应商 · 余额」，悬停看今日 / 累计花费，点击刷新，每次回复结束自动刷新
+- **Provider 页面**：状态行下一行余额、今日、累计；「明细」里看近 7 天每天花费、各模型用量，并可改提醒线
+- **模型设置左栏**：Provider 名旁小字余额，欠费红色、低于提醒线橙色；同一账户的几个 Provider 标 ↔
+- 余额低于提醒线（默认 5）时右上角一行小字，不会自动消失；同一账户只出一条；充值后自动消失
+- 后台每 10 分钟随连通性检测查一次；结果存 `~/.pi/agent/model-health.json`
+
 ## voice-input.js 长按语音输入
 
 - 在聊天输入框上按住鼠标左键约 0.45 秒，看到红点后开始说话

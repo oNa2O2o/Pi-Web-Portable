@@ -134,7 +134,28 @@ npm run test:models
 - 不得恢复 1.9.0 的 `model-quick-add.js` 弹框；页面提醒（小圆点、新模型提示、
   右上角失败小字）由 `portable/plugins/web/model-health-ui.js` 负责。
 - 打包后 `scripts/verify-model-health.mjs` 验证提醒脚本注入、服务可用、错误具体、
-  外部来源被拒绝。
+  外部来源被拒绝、`/balance` 可用。
+
+## 2026-11-12：中转余额（便携版 1.9.2）
+
+- 余额由插件服务 `server/model-health` 查询（`fetchBalance`），用模型同一个 Key，不花额度。
+  按顺序自动识别：Sub2API `/v1/usage`、New API / One API `/api/usage/token`、
+  OpenAI 账单接口 `/v1/dashboard/billing/subscription` + `usage`；OpenRouter、DeepSeek、
+  Moonshot、SiliconFlow 按域名走各自接口；Anthropic / OpenAI / Google 官方直接显示不支持。
+  这些路径上的 401/403 当作「不支持」，只有网络错误才报失败（Key 错误由连通性检测报告）。
+- 金额单位跟随接口（USD → $，CNY → ¥，其他写单位），New API 额度按 500000 = $1 换算。
+- 结果存进 `model-health.json` 的 `balance` / `balanceAccount` / `balanceHosts`，
+  `/status` 返回 `balances`（按 Provider 名）和 `settings.lowBalance`；`POST /balance`
+  （provider 名或当前 baseUrl/apiKey，`maxAgeMs` 复用）与 `POST /settings {lowBalance}`。
+- 同一中转上同时读到的余额完全相同即视为同一账户（`balanceAccount`），左栏标 ↔、
+  页面写「同一账户」、低余额提醒只出一条；用量（今日、累计、每日、模型）按 Key 分开。
+- 余额低于提醒线（默认 5，单位跟随接口，Provider 页「明细」里改）时右上角一行小字，
+  不自动消失，关闭后到余额恢复前不再出；充值后自动消失。
+- 显示位置：对话输入框下方当前模型旁（`components/ProviderBalanceChip.tsx`，
+  供应商 · 余额，悬停看今日/累计，点击刷新，回复结束后自动刷新）；Provider 页状态行下
+  （`BalanceLine`，明细含近 7 天、各模型用量、提醒线）；模型设置左栏 Provider 名旁。
+- 403 余额不足等 `quota` 错误后面附上当前余额（服务端 `computeStatus`、Provider 页错误框、
+  模型页测试结果）。
 
 ## 已有行为
 

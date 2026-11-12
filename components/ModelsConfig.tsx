@@ -65,7 +65,7 @@ import {
   type EnabledModelsController,
 } from "./EnabledModelsSection";
 import { providerBadgeLabel } from "./enabled-models-helpers";
-import { AutoCheckNote, CheckBadge, CheckErrorBox, ProviderCheckLine } from "./ModelAutoCheckUi";
+import { AutoCheckNote, BalanceLine, CheckBadge, CheckErrorBox, ProviderCheckLine } from "./ModelAutoCheckUi";
 import {
   API_LABEL,
   checkModel,
@@ -79,6 +79,10 @@ import {
   probeModels,
   trimUrl,
   type ModelCheck,
+  type BalanceInfo,
+  fetchBalance,
+  balanceText,
+  setLowBalance,
   type ProbeResult,
   type ProviderLike,
 } from "./model-auto-check";
@@ -398,6 +402,9 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
   /** Results for upstream models ticked to add, by id. */
   const [candidateChecks, setCandidateChecks] = useState<Record<string, ModelCheck>>({});
   const [newIds, setNewIds] = useState<string[]>([]);
+  const [balance, setBalance] = useState<BalanceInfo | null>(null);
+  const [balanceLoading, setBalanceLoading] = useState(false);
+  const balanceSeqRef = useRef(0);
   const [fixNote, setFixNote] = useState<{ text: string; undo: ProviderEntry } | null>(null);
   const providerRef = useRef(provider);
   providerRef.current = provider;
@@ -518,10 +525,23 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
     applyFixes(tested, results);
   }, [applyFixes, name]);
 
+  const runBalance = useCallback(async () => {
+    const seq = ++balanceSeqRef.current;
+    const current = providerRef.current;
+    if (!trimUrl(current.baseUrl) || !(current.apiKey ?? "").trim()) { setBalance(null); return; }
+    setBalanceLoading(true);
+    const info = await fetchBalance(name, current);
+    if (seq !== balanceSeqRef.current) return;
+    setBalanceLoading(false);
+    setBalance(info);
+    notifyHealthChanged();
+  }, [name]);
+
   const runAll = useCallback(() => {
     void runProbe(false);
     void runChecks();
-  }, [runChecks, runProbe]);
+    void runBalance();
+  }, [runBalance, runChecks, runProbe]);
 
   // Opening the page, and every change of URL / key / API, checks again.
   useEffect(() => {
@@ -534,6 +554,9 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
     setDiscoveryQuery("");
     setSelectedModelIds([]);
     setProbe(null);
+    setBalance(null);
+    balanceSeqRef.current += 1;
+    setBalanceLoading(false);
     setDiscoveryState({ phase: "idle" });
     const first = firstRunRef.current;
     firstRunRef.current = false;
@@ -703,6 +726,12 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
       </div>
 
       <ProviderCheckLine probe={probe} probing={probing} checks={modelChecks} onRecheck={runAll} />
+      <BalanceLine
+        info={balance}
+        loading={balanceLoading}
+        onRefresh={() => { void runBalance(); }}
+        onThreshold={(value) => { void setLowBalance(value).then(() => runBalance()); }}
+      />
       {fixNote && (
         <AutoCheckNote
           text={fixNote.text}
@@ -738,7 +767,7 @@ function ProviderDetail({ name, editingName, provider, onChange, onEditingNameCh
       </Field>
 
       {probe && !probe.ok && (
-        <CheckErrorBox title="拉取模型列表失败" error={probe} at={probe.at} onRetry={() => { void runProbe(false); }} />
+        <CheckErrorBox title="拉取模型列表失败" error={probe.code === "quota" && balance?.ok && !balance.unlimited ? { ...probe, error: `${probe.error}（当前余额 ${balanceText(balance)}）` } : probe} at={probe.at} onRetry={() => { void runProbe(false); }} />
       )}
 
       <Field label="API">
@@ -1252,6 +1281,13 @@ function ModelDetail({
     }
     if (result.state !== "bad") return;
     setTestState({ phase: "error", message: result.error, status: result.status, hint: result.hint, detail: result.detail, tried: result.tried, at: result.at });
+    if (result.code === "quota") {
+      // "Not enough balance" is easier to act on with the actual amount next to it.
+      void fetchBalance(providerName, record ? null : provider, 60_000).then((info) => {
+        if (requestId !== testRequestIdRef.current || !info?.ok || info.unlimited) return;
+        setTestState((prev) => prev.phase === "error" ? { ...prev, message: `${prev.message}（当前余额 ${balanceText(info)}）` } : prev);
+      });
+    }
   }, [model, onAutoSave, onChange, provider, providerName, record]);
 
   // Every time the model page opens (and after each edit) it is really called

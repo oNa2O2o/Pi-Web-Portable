@@ -1,6 +1,10 @@
 "use client";
 
-import { API_LABEL, formatMs, formatTime, type CheckError, type ModelCheck, type ProbeResult } from "./model-auto-check";
+import { useState } from "react";
+import {
+  API_LABEL, balanceLevel, balanceText, formatMoney, formatMs, formatTime,
+  type BalanceInfo, type CheckError, type ModelCheck, type ProbeResult,
+} from "./model-auto-check";
 
 const RED = "#ef4444";
 const GREEN = "#16a34a";
@@ -83,6 +87,107 @@ export function CheckBadge({ check, onRetry, candidate }: { check?: ModelCheck; 
       style={{ ...base, color: RED, cursor: onRetry ? "pointer" : "default" }}>
       ✗ {check.error}
     </button>
+  );
+}
+
+const linkButton = { border: "none", background: "none", padding: 0, color: "var(--accent)", cursor: "pointer", fontSize: 11, whiteSpace: "nowrap" } as const;
+
+export const BALANCE_COLOR = { ok: GREEN, low: AMBER, negative: RED, none: "var(--text-dim)" } as const;
+
+function usageText(usage?: { cost?: number; requests?: number }, unit?: string) {
+  if (!usage || usage.cost === undefined) return "";
+  return formatMoney(usage.cost, unit) + (usage.requests !== undefined ? `（${usage.requests} 次）` : "");
+}
+
+/** Balance of the relay account behind a provider, with daily / per-model spend and the alert threshold. */
+export function BalanceLine({ info, loading, onRefresh, onThreshold }: {
+  info: BalanceInfo | null;
+  loading: boolean;
+  onRefresh: () => void;
+  onThreshold: (value: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<string | null>(null);
+  if (!info) {
+    if (!loading) return null;
+    return <div style={{ fontSize: 11, color: "var(--text-dim)", minHeight: 18 }}>正在查余额…</div>;
+  }
+  if (!info.ok) {
+    const unsupported = info.code === "unsupported" || info.code === "skip" || info.code === "nokey";
+    return (
+      <div style={{ display: "flex", gap: 8, fontSize: 11, color: unsupported ? "var(--text-dim)" : AMBER, minHeight: 18 }} title={[info.error, info.hint].filter(Boolean).join("\n")}>
+        <span style={{ flex: 1 }}>{unsupported ? `余额：${info.error || "这个服务商不支持查余额"}` : `余额查询失败：${info.error}`}</span>
+        {!loading && !unsupported && <button type="button" onClick={onRefresh} style={linkButton}>重试</button>}
+      </div>
+    );
+  }
+  const level = balanceLevel(info);
+  const unit = info.unit;
+  const limit = info.lowBalance ?? 5;
+  const parts = [
+    info.today?.cost !== undefined ? `今日 ${usageText(info.today, unit)}` : "",
+    info.total?.cost !== undefined ? `累计 ${formatMoney(info.total.cost, unit)}` : "",
+    info.at ? `${formatTime(info.at)} 更新` : "",
+  ].filter(Boolean);
+  const commitThreshold = () => {
+    if (draft === null) return;
+    const value = Number(draft);
+    setDraft(null);
+    if (Number.isFinite(value) && value >= 0 && value !== limit) onThreshold(value);
+  };
+  const cell = { padding: "2px 10px 2px 0", whiteSpace: "nowrap" } as const;
+  return (
+    <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, minHeight: 18 }}>
+        <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          余额 <b style={{ color: BALANCE_COLOR[level], fontWeight: 600 }}>{balanceText(info)}</b>
+          {level === "negative" ? "（已欠费）" : level === "low" ? `（低于 ${formatMoney(limit, unit)}）` : ""}
+          {parts.length ? ` · ${parts.join(" · ")}` : ""}
+          {info.stale ? `（刷新失败：${info.error}，显示的是上次的结果）` : ""}
+          {info.sameAccount?.length ? ` · 同一账户：${info.sameAccount.join("、")}` : ""}
+        </span>
+        <button type="button" onClick={() => setOpen(!open)} style={linkButton}>{open ? "收起" : "明细"}</button>
+        {!loading ? <button type="button" onClick={onRefresh} style={linkButton}>刷新</button> : <span style={{ color: "var(--text-dim)" }}>刷新中…</span>}
+      </div>
+      {open && (
+        <div style={{ margin: "6px 0 4px", padding: "8px 10px", border: "1px solid var(--border)", borderRadius: 6, display: "flex", flexWrap: "wrap", gap: "8px 28px" }}>
+          {!!info.daily?.length && (
+            <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+              <thead><tr style={{ color: "var(--text-dim)", textAlign: "left" }}><th style={cell}>日期</th><th style={cell}>花费</th><th style={cell}>次数</th></tr></thead>
+              <tbody>
+                {[...info.daily].reverse().slice(0, 7).map((d) => (
+                  <tr key={d.date}><td style={cell}>{d.date.slice(5)}</td><td style={cell}>{formatMoney(d.cost, unit)}</td><td style={cell}>{d.requests ?? ""}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!!info.models?.length && (
+            <table style={{ borderCollapse: "collapse", fontSize: 11 }}>
+              <thead><tr style={{ color: "var(--text-dim)", textAlign: "left" }}><th style={cell}>模型（累计）</th><th style={cell}>花费</th><th style={cell}>次数</th></tr></thead>
+              <tbody>
+                {info.models.slice(0, 8).map((m) => (
+                  <tr key={m.model}><td style={cell}><code>{m.model}</code></td><td style={cell}>{formatMoney(m.cost, unit)}</td><td style={cell}>{m.requests ?? ""}</td></tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, color: "var(--text-dim)" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              余额低于
+              <input
+                type="number" min={0} step="any" value={draft ?? String(limit)}
+                onChange={(e) => setDraft(e.target.value)} onBlur={commitThreshold}
+                onKeyDown={(e) => { if (e.key === "Enter") commitThreshold(); }}
+                style={{ width: 64, fontSize: 11, padding: "2px 6px", background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: 4 }}
+              />
+              {(unit || "USD").toUpperCase()} 时提醒（所有服务商通用）
+            </label>
+            {info.plan && <span>账户类型：{info.plan}</span>}
+            {info.kindLabel && <span>数据来自 {info.kindLabel} 接口，不消耗额度</span>}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

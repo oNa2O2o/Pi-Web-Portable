@@ -297,7 +297,7 @@ async function enabledProviders() {
 function loadState() {
   try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); } catch { return {}; }
 }
-let state = Object.assign({ version: 1, conn: {}, call: {}, providers: {}, groups: {}, ignored: {}, alerts: [] }, loadState());
+let state = Object.assign({ version: 1, conn: {}, call: {}, providers: {}, groups: {}, ignored: {}, alerts: [], balance: {}, balanceKinds: {}, balanceHosts: {}, balanceDismissed: {}, settings: { lowBalance: 5 } }, loadState());
 function saveState() {
   try {
     fs.mkdirSync(path.dirname(STATE_FILE), { recursive: true });
@@ -316,12 +316,23 @@ function computeStatus(p) {
   const c = p.conn;
   const unsupported = c && !c.ok && ['path', 'html', 'format', 'shape'].includes(c.code);
   if (c && c.skip) return { status: 'unknown', reason: c.skip };
-  if (c && !c.ok && !unsupported) return { status: 'red', reason: c.error + (c.detail ? '：' + c.detail : '') };
-  if (tests.length && !passed.length) return { status: 'red', reason: `${failed[0].id}：${failed[0].error}` };
+  const b = p.balanceGroup && state.balance && state.balance[p.balanceGroup];
+  const quotaNote = (code) => (code === 'quota' && b && b.ok && !b.unlimited ? `（当前余额 ${money(b.balance, b.unit)}）` : '');
+  if (c && !c.ok && !unsupported) return { status: 'red', reason: c.error + quotaNote(c.code) + (c.detail ? '：' + c.detail : '') };
+  if (tests.length && !passed.length) return { status: 'red', reason: `${failed[0].id}：${failed[0].error}${quotaNote(failed[0].code)}` };
   if (failed.length) return { status: 'yellow', reason: failed.map((t) => `${t.id}：${t.error}`).join('；') };
   if (unsupported) return { status: passed.length ? 'green' : 'yellow', reason: passed.length ? '' : '拉取模型列表失败：' + c.error };
   if (!c && !tests.length) return { status: 'unknown', reason: '还没检测' };
   return { status: 'green', reason: '' };
+}
+
+const CURRENCY = { USD: '$', CNY: '¥', RMB: '¥', EUR: '€', GBP: '£', JPY: '¥' };
+function money(v, unit) {
+  if (!Number.isFinite(v)) return '—';
+  const u = String(unit || 'USD').toUpperCase();
+  const s = Math.abs(v).toFixed(2);
+  const sign = v < 0 ? '-' : '';
+  return CURRENCY[u] ? `${sign}${CURRENCY[u]}${s}` : `${sign}${s} ${u}`;
 }
 
 function refreshStatuses(names) {
@@ -395,6 +406,7 @@ async function runConn() {
       groups[gid] = { baseUrl: g.baseUrl, providers: g.providers, newModels: fresh, seenAt, total: g.ids.size };
     }
     state.groups = groups;
+    try { await runBalances(Object.entries(providers).map(([name, conf]) => ({ name, conf }))); } catch (e) { console.error('[model-health] balance run failed:', e.message || e); }
     state.conn = { lastRun: Date.now(), every: CONN_EVERY };
     refreshStatuses(names);
     saveState();
@@ -436,6 +448,247 @@ async function runCall() {
   } finally {
     running.call = false;
   }
+}
+
+// ---------- balance ----------
+// Relays answer "how much is left" on different paths. Each kind returns the
+// same shape: { balance, unit, plan?, unlimited?, today?, total?, daily?, models? }.
+// Money is in the unit the service reports (USD, CNY, ...); quota-based
+// services are converted to USD.
+const NO_BALANCE_HOSTS = /(^|\.)(api\.anthropic\.com|api\.openai\.com|generativelanguage\.googleapis\.com|aiplatform\.googleapis\.com|api\.x\.ai|api\.mistral\.ai|api\.groq\.com)$/i;
+const num = (v) => (v === null || v === undefined || v === '' || !Number.isFinite(Number(v)) ? undefined : Number(v));
+const NEWAPI_QUOTA_PER_USD = 500000;
+const day = (d) => d.toISOString().slice(0, 10);
+
+function parseSub2api(j) {
+  if (!j || typeof j !== 'object') return null;
+  const balance = num(j.remaining) ?? num(j.balance);
+  if (balance === undefined || !('isValid' in j || 'planName' in j || 'daily_usage' in j)) return null;
+  const u = j.usage || {};
+  const money = (x) => (x ? num(x.actual_cost) ?? num(x.cost) : undefined);
+  return {
+    balance,
+    unit: String(j.unit || 'USD').toUpperCase(),
+    plan: j.planName ? String(j.planName) : undefined,
+    unlimited: false,
+    today: u.today ? { cost: money(u.today), requests: num(u.today.requests) } : undefined,
+    total: u.total ? { cost: money(u.total), requests: num(u.total.requests) } : undefined,
+    daily: (Array.isArray(j.daily_usage) ? j.daily_usage : []).slice(-14).map((d) => ({ date: String(d.date), cost: money(d), requests: num(d.requests) })),
+    models: (Array.isArray(j.model_stats) ? j.model_stats : []).map((m) => ({ model: String(m.model), cost: money(m), requests: num(m.requests) })).sort((a, b) => (b.cost || 0) - (a.cost || 0)).slice(0, 12),
+  };
+}
+
+function parseNewapiToken(j) {
+  const d = j && j.data;
+  if (!d || typeof d !== 'object' || !('total_available' in d || 'total_granted' in d)) return null;
+  const unlimited = !!d.unlimited_quota;
+  return {
+    balance: unlimited ? undefined : (num(d.total_available) || 0) / NEWAPI_QUOTA_PER_USD,
+    unit: 'USD',
+    plan: d.name ? `令牌 ${d.name}` : undefined,
+    unlimited,
+    total: num(d.total_used) !== undefined ? { cost: num(d.total_used) / NEWAPI_QUOTA_PER_USD } : undefined,
+  };
+}
+
+const KINDS = {
+  sub2api: { label: 'Sub2API', async fetch(root, h) {
+    const r = await request(root + '/v1/usage', { headers: h, kind: 'balance' });
+    return r.ok ? (parseSub2api(r.json) || { miss: true }) : r;
+  } },
+  newapi: { label: 'New API / One API', async fetch(root, h) {
+    const r = await request(root + '/api/usage/token', { headers: h, kind: 'balance' });
+    return r.ok ? (parseNewapiToken(r.json) || { miss: true }) : r;
+  } },
+  dashboard: { label: 'OpenAI 账单接口', async fetch(root, h) {
+    const s = await request(root + '/v1/dashboard/billing/subscription', { headers: h, kind: 'balance' });
+    if (!s.ok) return s;
+    const limit = num(s.json && (s.json.hard_limit_usd ?? s.json.system_hard_limit_usd));
+    if (limit === undefined) return { miss: true };
+    const now = new Date();
+    const from = new Date(now.getTime() - 99 * 864e5);
+    const to = new Date(now.getTime() + 864e5);
+    const u = await request(`${root}/v1/dashboard/billing/usage?start_date=${day(from)}&end_date=${day(to)}`, { headers: h, kind: 'balance' });
+    const used = u.ok ? (num(u.json && u.json.total_usage) || 0) / 100 : 0;
+    const unlimited = limit >= 1e8;
+    return { balance: unlimited ? undefined : limit - used, unit: 'USD', unlimited, total: u.ok ? { cost: used } : undefined };
+  } },
+  openrouter: { label: 'OpenRouter', async fetch(root, h) {
+    const r = await request('https://openrouter.ai/api/v1/credits', { headers: h, kind: 'balance' });
+    const d = r.ok && r.json && r.json.data;
+    if (!r.ok) return r;
+    if (!d || num(d.total_credits) === undefined) return { miss: true };
+    return { balance: num(d.total_credits) - (num(d.total_usage) || 0), unit: 'USD', total: { cost: num(d.total_usage) } };
+  } },
+  deepseek: { label: 'DeepSeek', async fetch(root, h) {
+    const r = await request('https://api.deepseek.com/user/balance', { headers: h, kind: 'balance' });
+    if (!r.ok) return r;
+    const infos = (r.json && r.json.balance_infos) || [];
+    const b = infos.find((x) => x.currency === 'CNY') || infos[0];
+    if (!b) return { miss: true };
+    return { balance: num(b.total_balance), unit: String(b.currency || 'CNY').toUpperCase() };
+  } },
+  moonshot: { label: 'Moonshot', async fetch(root, h) {
+    const r = await request(root + '/v1/users/me/balance', { headers: h, kind: 'balance' });
+    if (!r.ok) return r;
+    const d = r.json && r.json.data;
+    if (!d || num(d.available_balance) === undefined) return { miss: true };
+    return { balance: num(d.available_balance), unit: /\.cn$/i.test(hostOf(root)) ? 'CNY' : 'USD' };
+  } },
+  siliconflow: { label: 'SiliconFlow', async fetch(root, h) {
+    const r = await request(root + '/v1/user/info', { headers: h, kind: 'balance' });
+    if (!r.ok) return r;
+    const d = r.json && r.json.data;
+    if (!d || num(d.totalBalance ?? d.balance) === undefined) return { miss: true };
+    return { balance: num(d.totalBalance ?? d.balance), unit: /\.cn$/i.test(hostOf(root)) ? 'CNY' : 'USD' };
+  } },
+};
+
+function kindsFor(root) {
+  const host = hostOf(root);
+  if (NO_BALANCE_HOSTS.test(host)) return [];
+  if (/(^|\.)openrouter\.ai$/i.test(host)) return ['openrouter'];
+  if (/(^|\.)deepseek\.com$/i.test(host)) return ['deepseek'];
+  if (/(^|\.)moonshot\.(cn|ai)$/i.test(host)) return ['moonshot'];
+  if (/(^|\.)siliconflow\.(cn|com)$/i.test(host)) return ['siliconflow'];
+  const known = state.balanceKinds[host];
+  const order = ['sub2api', 'newapi', 'dashboard'];
+  return known && order.includes(known) ? [known, ...order.filter((k) => k !== known)] : order;
+}
+
+// One balance lookup per url + key. Only network failures are reported as
+// errors: many relays guard unknown paths with 401/403, and a bad key already
+// shows up in the connection check.
+async function fetchBalance(baseUrl, key, extraHeaders) {
+  const root = stripVer(trimUrl(baseUrl));
+  const kinds = kindsFor(root);
+  if (!key) return { ok: false, code: 'nokey', error: '没有 API Key' };
+  if (!kinds.length) return { ok: false, code: 'unsupported', error: '这个服务商不支持查余额' };
+  const h = { ...listHeaders(key, extraHeaders) };
+  let firstReal = null;
+  for (const kind of kinds) {
+    const r = await KINDS[kind].fetch(root, h);
+    if (r && r.balance !== undefined || (r && r.unlimited)) {
+      state.balanceKinds[hostOf(root)] = kind;
+      return { ok: true, kind, kindLabel: KINDS[kind].label, ...r };
+    }
+    if (r && !r.miss && !r.ok && ['dns', 'refused', 'cert', 'timeout', 'network', 'reset'].includes(r.code)) {
+      firstReal = r;
+      break;
+    }
+  }
+  if (firstReal) return { ok: false, ...publicError(firstReal) };
+  return { ok: false, code: 'unsupported', error: '这个服务商不支持查余额' };
+}
+
+const lowBalance = () => (state.settings && Number.isFinite(state.settings.lowBalance) ? state.settings.lowBalance : 5);
+
+function storeBalance(gid, providerNames, r) {
+  const prev = state.balance[gid];
+  const at = Date.now();
+  if (r.ok) {
+    const { ok, kind, kindLabel, balance, unit, plan, unlimited, today, total, daily, models } = r;
+    state.balance[gid] = { ok, kind, kindLabel, balance, unit, plan, unlimited, today, total, daily, models, at };
+  } else if (r.code !== 'unsupported' && prev && prev.ok) {
+    // keep the last known amount and say it could not be refreshed
+    state.balance[gid] = { ...prev, stale: true, error: r.error, code: r.code, failedAt: at };
+  } else {
+    state.balance[gid] = { ok: false, code: r.code, error: r.error, hint: r.hint, detail: r.detail, at };
+  }
+  for (const name of providerNames) {
+    const rec = state.providers[name] = state.providers[name] || { models: {} };
+    rec.balanceGroup = gid;
+  }
+}
+
+// Keys of one relay wallet report the same balance. Balances read together in
+// one run that are identical (same host, same unit) are linked as one account;
+// the link is kept until a later joint read tells them apart, so spending
+// between two separate reads does not split the account.
+function linkAccounts(gids) {
+  state.balanceAccount = state.balanceAccount || {};
+  const buckets = new Map();
+  for (const gid of gids) {
+    const b = state.balance[gid];
+    if (!b || !b.ok || b.stale || b.unlimited || !Number.isFinite(b.balance)) continue;
+    const key = [state.balanceHosts[gid] || '', b.unit, b.balance.toFixed(6)].join('|');
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(gid);
+  }
+  for (const members of buckets.values()) {
+    const id = members.sort().join('+');
+    for (const gid of members) state.balanceAccount[gid] = id;
+  }
+}
+
+function accounts() {
+  const byGid = new Map();
+  for (const [name, rec] of Object.entries(state.providers)) {
+    if (!rec.balanceGroup || !state.balance[rec.balanceGroup]) continue;
+    if (!byGid.has(rec.balanceGroup)) byGid.set(rec.balanceGroup, []);
+    byGid.get(rec.balanceGroup).push(name);
+  }
+  const byAccount = new Map();
+  for (const [gid, names] of byGid) {
+    const acc = (state.balanceAccount && state.balanceAccount[gid]) || gid;
+    const a = byAccount.get(acc) || { host: (state.balanceHosts && state.balanceHosts[gid]) || '', gids: [], providers: [] };
+    a.gids.push(gid);
+    a.providers.push(...names);
+    byAccount.set(acc, a);
+  }
+  const list = [...byAccount.values()];
+  for (const a of list) {
+    a.providers.sort();
+    a.id = a.providers.join('|');
+    // newest read first: that is the amount to show for the whole account
+    a.gids.sort((x, y) => (state.balance[y].at || 0) - (state.balance[x].at || 0));
+  }
+  return list;
+}
+
+function refreshBalanceAlerts() {
+  const limit = lowBalance();
+  state.balanceDismissed = state.balanceDismissed || {};
+  const keep = [];
+  for (const a of accounts()) {
+    const b = state.balance[a.gids[0]];
+    const low = b.ok && !b.unlimited && b.balance < limit;
+    if (!low) { delete state.balanceDismissed[a.id]; continue; }
+    if (state.balanceDismissed[a.id]) continue;
+    keep.push({ id: 'bal-' + crypto.createHash('sha256').update(a.id).digest('hex').slice(0, 10), type: 'balance', account: a.id, providers: a.providers, balance: b.balance, unit: b.unit, limit, at: b.at });
+  }
+  state.alerts = state.alerts.filter((x) => x.type !== 'balance').concat(keep);
+}
+
+function balanceEntries(items) {
+  const groups = new Map();
+  for (const p of items) {
+    if (!p.conf || !p.conf.baseUrl) continue;
+    const k = resolveKey(p.conf.apiKey);
+    if (!k.key) continue;
+    const gid = groupId(p.conf.baseUrl, k.key);
+    const g = groups.get(gid) || { gid, baseUrl: p.conf.baseUrl, key: k.key, headers: p.conf.headers, names: [] };
+    if (p.name) g.names.push(p.name);
+    groups.set(gid, g);
+  }
+  return [...groups.values()];
+}
+
+async function readBalances(entries) {
+  state.balanceHosts = state.balanceHosts || {};
+  await pool(entries, 4, async (g) => {
+    state.balanceHosts[g.gid] = hostOf(g.baseUrl);
+    storeBalance(g.gid, g.names, await fetchBalance(g.baseUrl, g.key, g.headers));
+  });
+  linkAccounts(entries.map((g) => g.gid));
+}
+
+async function runBalances(list) {
+  const entries = balanceEntries(list);
+  await readBalances(entries);
+  const live = new Set(entries.map((g) => g.gid));
+  for (const gid of Object.keys(state.balance)) if (!live.has(gid) && !Object.values(state.providers).some((r) => r.balanceGroup === gid)) delete state.balance[gid];
+  refreshBalanceAlerts();
 }
 
 let started = 0;
@@ -484,8 +737,38 @@ function recordTest(name, modelId, r) {
   saveState();
 }
 
+// What the pages show for one provider: its balance plus the other providers
+// that draw on the same account.
+function balanceView(name, gid) {
+  const acc = accounts().find((a) => a.gids.includes(gid) || (name && a.providers.includes(name)));
+  return { sameAccount: acc ? acc.providers.filter((n) => n !== name) : [], lowBalance: lowBalance() };
+}
+// One key's record, with the newest balance of its account (usage stays per key).
+function balanceFor(gid) {
+  const own = state.balance[gid];
+  if (!own) return { ok: false, code: 'unknown', error: '还没查' };
+  const acc = state.balanceAccount && state.balanceAccount[gid];
+  let newest = own;
+  if (acc) {
+    for (const [g, id] of Object.entries(state.balanceAccount)) {
+      const b = id === acc && state.balance[g];
+      if (b && b.ok && !b.stale && (b.at || 0) > (newest.at || 0)) newest = b;
+    }
+  }
+  return newest === own ? own : { ...own, balance: newest.balance, at: newest.at, stale: false };
+}
+function publicBalances() {
+  const out = {};
+  for (const a of accounts()) {
+    for (const n of a.providers) out[n] = { ...balanceFor(state.providers[n].balanceGroup), sameAccount: a.providers.filter((x) => x !== n) };
+  }
+  return out;
+}
+
 function publicState() {
   return {
+    balances: publicBalances(),
+    settings: { lowBalance: lowBalance() },
     conn: { ...state.conn, nextRun: state.conn.lastRun ? state.conn.lastRun + CONN_EVERY : null, running: running.conn },
     call: { ...state.call, nextRun: state.call.lastRun ? state.call.lastRun + CALL_EVERY : null, running: running.call },
     providers: state.providers,
@@ -546,7 +829,50 @@ const server = http.createServer(async (req, res) => {
       saveState();
       return send(200, publicState());
     }
+    if (route === '/balance') {
+      // Either the page's current (possibly unsaved) settings, or just a saved provider name.
+      const name = validName(body.provider) ? body.provider : '';
+      let conf = body.baseUrl ? { baseUrl: body.baseUrl, apiKey: body.apiKey, headers: body.headers } : null;
+      if (!conf && name) {
+        const cfg = await piweb('/api/models-config');
+        conf = cfg && cfg.providers && cfg.providers[name];
+      }
+      if (!conf || !conf.baseUrl) return send(400, { ok: false, error: 'provider 或 baseUrl 必填' });
+      const k = resolveKey(conf.apiKey);
+      if (k.skip) return send(200, { ok: false, code: 'skip', error: k.skip });
+      const gid = groupId(conf.baseUrl, k.key || '');
+      const fresh = state.balance[gid];
+      const maxAge = Number(body.maxAgeMs) || 0;
+      if (!(fresh && maxAge && Date.now() - fresh.at < maxAge)) {
+        // read the other saved providers on the same host too, so keys of one
+        // wallet are compared at the same moment
+        const items = [{ name, conf }];
+        try {
+          const cfg = await piweb('/api/models-config');
+          for (const [n, p] of Object.entries((cfg && cfg.providers) || {})) {
+            if (n !== name && p && p.baseUrl && hostOf(p.baseUrl) === hostOf(conf.baseUrl)) items.push({ name: n, conf: p });
+          }
+        } catch { /* only the asked one */ }
+        await readBalances(balanceEntries(items));
+        if (!k.key) storeBalance(gid, name ? [name] : [], { ok: false, code: 'nokey', error: '没有 API Key' });
+        if (name) refreshStatuses([name]);
+        refreshBalanceAlerts();
+        saveState();
+      }
+      return send(200, { ...balanceFor(gid), ...balanceView(name, gid) });
+    }
+    if (route === '/settings') {
+      const v = Number(body.lowBalance);
+      if (!Number.isFinite(v) || v < 0 || v > 1e6) return send(400, { error: 'lowBalance must be a number >= 0' });
+      state.settings = { ...(state.settings || {}), lowBalance: v };
+      state.balanceDismissed = {};
+      refreshBalanceAlerts();
+      saveState();
+      return send(200, publicState());
+    }
     if (route === '/dismiss') {
+      const hit = state.alerts.find((a) => a.id === body.id);
+      if (hit && hit.type === 'balance') state.balanceDismissed[hit.account] = true;
       state.alerts = state.alerts.filter((a) => a.id !== body.id);
       saveState();
       return send(200, publicState());
@@ -566,4 +892,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listModels, testModel, callOnce, candidates, httpError, netError, computeStatus };
+module.exports = { listModels, testModel, callOnce, candidates, httpError, netError, computeStatus, fetchBalance, parseSub2api, parseNewapiToken, money };

@@ -36,6 +36,7 @@ import { useFontPreferences } from "@/hooks/useFontPreferences";
 import type { ToolPreset } from "@/lib/tool-presets";
 import { SelectorRow } from "./SelectorRow";
 import { ModelSelector, type ModelSelectorOption } from "./ModelSelector";
+import { ProviderBalanceChip } from "./ProviderBalanceChip";
 
 export { filterModelOptions } from "./ModelSelector";
 
@@ -2561,6 +2562,14 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 onSetDefault={onSetDefaultModel}
                 allOptions={allModelList?.map((m) => ({ provider: m.provider, providerName: m.providerName, modelId: m.id, name: m.name }))}
                 onShowAll={onLoadAllModels}
+              />
+            )}
+            {model?.provider && onModelChange && (
+              <ProviderBalanceChip
+                provider={model.provider}
+                label={modelOptions.find((option) => option.provider === model.provider && option.providerName)?.providerName}
+                isStreaming={isStreaming}
+                compact={isMobile}
               />
             )}
           </div>

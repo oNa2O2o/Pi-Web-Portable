@@ -37,6 +37,15 @@ const probe = await (await fetch(api + '/probe', {
 })).json();
 if (probe.ok !== false || !probe.error || /fetch failed/i.test(probe.error)) fail('probe error not specific: ' + JSON.stringify(probe));
 
+// Balance lookup answers in the shared shape and reports the network failure.
+const balance = await (await fetch(api + '/balance', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ baseUrl: 'http://127.0.0.1:65530', apiKey: 'sk-test' }),
+})).json();
+if (balance.ok !== false || !balance.error || typeof balance.lowBalance !== 'number') fail('unexpected /balance answer: ' + JSON.stringify(balance));
+if (typeof status.balances !== 'object' || !status.settings) fail('/status has no balances: ' + JSON.stringify(status).slice(0, 200));
+
 const foreign = await fetch(api + '/status', { headers: { Origin: 'https://evil.example' } });
 if (foreign.status !== 403) fail('foreign origin was not rejected (HTTP ' + foreign.status + ')');
 

@@ -14,6 +14,21 @@
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const fmtTime = (t) => (t ? new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '—');
   const fmtMs = (ms) => (ms >= 1000 ? (ms / 1000).toFixed(1) + 's' : ms + 'ms');
+  const CURRENCY = { USD: '$', CNY: '¥', RMB: '¥', EUR: '€', GBP: '£', JPY: '¥' };
+  function money(v, unit) {
+    if (typeof v !== 'number' || !isFinite(v)) return '—';
+    const u = String(unit || 'USD').toUpperCase();
+    const s = Math.abs(v).toFixed(2);
+    return (v < 0 ? '-' : '') + (CURRENCY[u] ? CURRENCY[u] + s : s + ' ' + u);
+  }
+  function shortMoney(v, unit) {
+    // sidebar: $242 / -$0.03 / ¥1.2k
+    if (typeof v !== 'number' || !isFinite(v)) return '';
+    const a = Math.abs(v);
+    const u = String(unit || 'USD').toUpperCase();
+    const s = a >= 10000 ? (a / 1000).toFixed(0) + 'k' : a >= 1000 ? (a / 1000).toFixed(1) + 'k' : a >= 100 ? a.toFixed(0) : a.toFixed(2);
+    return (v < 0 ? '-' : '') + (CURRENCY[u] ? CURRENCY[u] + s : s + ' ' + u);
+  }
   function hostOf(u) { try { return new URL(u).hostname; } catch { return ''; } }
 
   async function api(url, opts) {
@@ -37,6 +52,9 @@
   .mh-dot.green{background:#22c55e}.mh-dot.yellow{background:#f59e0b}.mh-dot.red{background:#ef4444}
   .mh-mdot{width:5px;height:5px;border-radius:50%;flex:none;margin-left:4px}
   .mh-mdot.ok{background:#22c55e;opacity:.7}.mh-mdot.bad{background:#ef4444}
+  .mh-alert-bal i{background:#f59e0b}
+  .mh-bal{flex:none;margin-left:6px;font-size:10.5px;line-height:1;color:var(--text-dim);font-variant-numeric:tabular-nums}
+  .mh-bal.low{color:#d97706;font-weight:600}.mh-bal.neg{color:#ef4444;font-weight:600}
   .mh-bar{margin:6px 8px 2px;padding:6px 8px;border-radius:8px;font-size:12px;line-height:1.5;background:rgba(59,130,246,.09);border:1px solid rgba(59,130,246,.25)}
   .mh-new:empty{display:none}
   .mh-status.mh-bar{background:none;border:0;padding:0 8px;margin:4px 0 0;color:var(--text-dim,#888);font-size:11px}
@@ -84,10 +102,19 @@
         health('/dismiss', { id }).then((s) => { hstate = s; }).catch(() => {});
       });
     }
-    const sig = JSON.stringify(list.map((a) => [a.id, a.error]));
+    const sig = JSON.stringify(list.map((a) => [a.id, a.error, a.balance]));
     if (alertsBox.dataset.sig === sig) return;
     alertsBox.dataset.sig = sig;
     alertsBox.innerHTML = list.map((a) => {
+      if (a.type === 'balance') {
+        const who = (a.providers || []).join('、');
+        const amount = money(a.balance, a.unit);
+        const text = a.balance < 0 ? `「${who}」已欠费：余额 ${amount}` : `「${who}」余额不足：${amount}（低于 ${money(a.limit, a.unit)}）`;
+        const tip = `${text}
+${new Date(a.at).toLocaleString()} 查询
+充值后这条提醒会自动消失；提醒线可在模型设置 → Provider → 余额「明细」里改`;
+        return `<div class="mh-alert mh-alert-bal" title="${esc(tip)}"><i></i><span>${esc(text)}</span><button data-dismiss="${esc(a.id)}" title="关闭">×</button></div>`;
+      }
       const tip = `${a.provider} 连接失败（${new Date(a.at).toLocaleString()}）\n${a.error}${a.hint ? '\n' + a.hint : ''}\n恢复后这条提醒会自动消失`;
       return `<div class="mh-alert" title="${esc(tip)}"><i></i><span>模型「${esc(a.provider)}」连接失败：${esc(a.error)}</span><button data-dismiss="${esc(a.id)}" title="关闭">×</button></div>`;
     }).join('');
@@ -128,6 +155,16 @@
         const status = rec.status || 'unknown';
         const tip = `${name}：${STATUS_TEXT[status] || status}${rec.reason ? '\n' + rec.reason : ''}${rec.conn && rec.conn.hint ? '\n' + rec.conn.hint : ''}\n连通性检测 ${fmtTime(rec.conn && rec.conn.at)}（每 10 分钟）\n真实调用 ${fmtTime(hstate.call.lastRun)}（每 6 小时）`;
         setNode(btn, 'mh-dot ' + status, status + tip, (el) => { el.title = tip; });
+        const bal = hstate.balances && hstate.balances[name];
+        const limit = (hstate.settings && hstate.settings.lowBalance) ?? 5;
+        if (bal && bal.ok && !bal.unlimited && typeof bal.balance === 'number') {
+          const level = bal.balance < 0 ? 'neg' : bal.balance < limit ? 'low' : 'ok';
+          const btip = `余额 ${money(bal.balance, bal.unit)}${bal.stale ? '（上次结果，刷新失败：' + bal.error + '）' : ''}（${fmtTime(bal.at)} 查询）${bal.sameAccount && bal.sameAccount.length ? '\n同一账户：' + bal.sameAccount.join('、') : ''}`;
+          setNode(btn, 'mh-bal ' + level, level + btip, (el) => { el.textContent = shortMoney(bal.balance, bal.unit) + (bal.sameAccount && bal.sameAccount.length ? ' ↔' : ''); el.title = btip; });
+        } else {
+          const old = btn.querySelector(':scope > .mh-bal');
+          if (old) old.remove();
+        }
         // model rows that follow inside the same wrapper
         const models = (providers[name] && providers[name].models) || [];
         const rowsEl = [...btn.parentElement.children].filter((c) => c.matches && c.matches('.config-sidebar-item.models-sidebar-indented-item'));
