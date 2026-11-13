@@ -1,20 +1,27 @@
+import { LLAMA_CPP_PROVIDER_ID } from "@/lib/provider-listing";
 import { NextResponse } from "next/server";
 import { invalidateModelsCache } from "@/lib/models-cache";
 import { removeStoredCredentialIfType, storeProviderCredential } from "@/lib/provider-credential-store";
 import { invalidateRpcSessionModelConfig } from "@/lib/rpc-manager";
 import { getModelRuntimeWithExtensions } from "@/lib/model-runtime";
+import { refreshModelCatalogs } from "@/lib/model-catalog-refresh";
 
 export const dynamic = "force-dynamic";
 
 type Params = { params: Promise<{ provider: string }> };
 
-// POST /api/auth/api-key/[provider]  body: { apiKey: string }
+// llama.cpp takes the router URL and an optional key through its own login.
 export async function POST(req: Request, { params }: Params) {
   const { provider } = await params;
   try {
-    const { apiKey } = await req.json() as { apiKey?: string };
-    if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
+    const { apiKey = "", serverUrl } = await req.json() as { apiKey?: unknown; serverUrl?: unknown };
+    const llama = provider === LLAMA_CPP_PROVIDER_ID;
+    if (typeof apiKey !== "string" || (!llama && !apiKey.trim())) {
       return NextResponse.json({ error: "apiKey is required" }, { status: 400 });
+    }
+    const routerUrl = llama && typeof serverUrl === "string" ? URL.parse(serverUrl) : null;
+    if (llama && (!routerUrl || !["http:", "https:"].includes(routerUrl.protocol))) {
+      return NextResponse.json({ error: "Enter an http or https llama.cpp router URL" }, { status: 400 });
     }
     const modelRuntime = await getModelRuntimeWithExtensions();
     const apiKeyAuth = modelRuntime.getProvider(provider)?.auth.apiKey;
@@ -26,6 +33,7 @@ export async function POST(req: Request, { params }: Params) {
       signal: req.signal,
       notify: () => {},
       prompt: async (prompt) => {
+        if (routerUrl && prompt.type === "text") return routerUrl.href;
         if (prompt.type === "select") {
           const keyOption = prompt.options.find((option) => option.id === "api-key" || option.id === "bearer-token");
           if (keyOption) return keyOption.id;
@@ -44,6 +52,10 @@ export async function POST(req: Request, { params }: Params) {
     await storeProviderCredential(provider, credential);
     invalidateModelsCache();
     invalidateRpcSessionModelConfig();
+    if (llama) {
+      const catalog = await refreshModelCatalogs({ providers: [provider], signal: req.signal });
+      return NextResponse.json({ success: true, catalog });
+    }
     return NextResponse.json({ success: true });
   } catch (error) {
     return NextResponse.json({ error: String(error) }, { status: 500 });

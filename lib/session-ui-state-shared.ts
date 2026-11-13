@@ -1,6 +1,7 @@
 // The sidebar's own UI state for sessions and projects: which session families
 // are pinned or archived, which projects are pinned, the order of the project
-// groups and the names the user gave projects. It is pi-web's state,
+// groups, the names the user gave projects, and when sessions were last read
+// (each browser's unread markers clear against it). It is pi-web's state,
 // never written into a session's `.jsonl`, so the pi CLI does not see it. The
 // server keeps it in `pi-web-session-state.json` in the agent dir
 // (`lib/session-ui-state.ts`); this module holds the types and the pure rules
@@ -28,6 +29,11 @@ export const MAX_PROJECT_NAME_LENGTH = 80;
 export const MAX_PROJECT_NAMES = 1000;
 /** Most UTF-8 bytes `projectNames` takes as JSON: its keys are projectKeys, as long as the order's. */
 export const PROJECT_NAMES_MAX_BYTES = 256 * 1024;
+/**
+ * Most sessions `readAt` holds; the oldest reads go first. A read only matters
+ * against a marker set after an earlier read, so old ones are cheap to lose.
+ */
+export const MAX_READ_AT_ENTRIES = 2000;
 
 /** Epoch ms, keyed by the FAMILY ROOT session id. */
 export interface SessionUiFamilyState { pinnedAt?: number; archivedAt?: number }
@@ -65,6 +71,13 @@ export interface SessionUiState {
    * activity time (ms), so a dragged session keeps its place. Absent while empty.
    */
   sessionRanks?: Record<string, number>;
+  /**
+   * When the session was last seen by someone actually looking at a page
+   * (the server's epoch ms, keyed by session id; `lib/unread-markers.ts`).
+   * Each browser keeps its own unread markers; a read here clears the ones
+   * set before it, in every browser. Absent while empty.
+   */
+  readAt?: Record<string, number>;
 }
 /**
  * One session folder: the project it lives in, its name, when it was made,
@@ -128,7 +141,9 @@ export type SessionUiStateRequest =
   /** A drag: into `folderId` (null: out of folders), with new sort keys when placed between rows. */
   | { action: "place-sessions"; ids: string[]; folderId: string | null; ranks?: number[] }
   /** A project's display name; null (or an empty name) removes it, and the folder name shows again. */
-  | { action: "rename-project"; projectKey: string; name: string | null };
+  | { action: "rename-project"; projectKey: string; name: string | null }
+  /** Someone looking at a page has seen these sessions: their `readAt` becomes the time of the request. */
+  | { action: "read"; ids: string[] };
 
 export interface SessionUiStateResponse { state: SessionUiState }
 
@@ -338,6 +353,15 @@ export function normalizeSessionUiState(value: unknown): SessionUiState | null {
     }
     if (count > 0) state.sessionRanks = ranks;
   }
+  // Like the order: anything but an object reads as no reads.
+  if (isPlainObject(value.readAt)) {
+    const reads: Record<string, number> = {};
+    for (const [id, at] of Object.entries(value.readAt)) {
+      if (isSessionId(id) && isTimestamp(at)) reads[id] = at;
+    }
+    const capped = capReadAt(reads);
+    if (Object.keys(capped).length > 0) state.readAt = capped;
+  }
   return state;
 }
 
@@ -345,6 +369,14 @@ export function normalizeSessionUiState(value: unknown): SessionUiState | null {
 export function folderDisplayName(value: unknown): string | undefined {
   const name = projectDisplayName(value);
   return typeof name === "string" ? name : undefined;
+}
+
+/** `reads` with at most MAX_READ_AT_ENTRIES entries, the newest kept. */
+function capReadAt(reads: Record<string, number>): Record<string, number> {
+  const entries = Object.entries(reads);
+  if (entries.length <= MAX_READ_AT_ENTRIES) return reads;
+  entries.sort((a, b) => b[1] - a[1]);
+  return Object.fromEntries(entries.slice(0, MAX_READ_AT_ENTRIES));
 }
 
 type ParseResult = { ok: true; request: SessionUiStateRequest } | { ok: false; error: string };
@@ -523,8 +555,13 @@ export function parseSessionUiStateRequest(body: unknown): ParseResult {
       }
       return { ok: true, request: { action: "place-sessions", ids: ids.ids, folderId: body.folderId as string | null, ...(ranks ? { ranks } : {}) } };
     }
+    case "read": {
+      const ids = parseIds(body.ids);
+      if (!ids.ok) return ids;
+      return { ok: true, request: { action: "read", ids: ids.ids } };
+    }
     default:
-      return { ok: false, error: "action must be \"set\", \"restore\", \"pin-project\", \"add-projects\", \"move-project\", \"rename-project\", \"create-folder\", \"rename-folder\", \"delete-folder\", \"move-folder\", \"archive-folder\", \"move-to-folder\" or \"place-sessions\"" };
+      return { ok: false, error: "action must be \"set\", \"restore\", \"pin-project\", \"add-projects\", \"move-project\", \"rename-project\", \"create-folder\", \"rename-folder\", \"delete-folder\", \"move-folder\", \"archive-folder\", \"move-to-folder\", \"place-sessions\" or \"read\"" };
   }
 }
 
@@ -588,6 +625,7 @@ function copyState(state: SessionUiState): SessionUiState {
   }
   if (state.folderOf) copy.folderOf = { ...state.folderOf };
   if (state.sessionRanks) copy.sessionRanks = { ...state.sessionRanks };
+  if (state.readAt) copy.readAt = { ...state.readAt };
   return copy;
 }
 
@@ -856,6 +894,18 @@ export function applySessionUiStateRequest(
         });
         if (Object.keys(ranks).length > 0) next.sessionRanks = ranks;
       }
+      break;
+    }
+    case "read": {
+      // Never back in time: a read replayed late, or a clock that stepped back, keeps the later one.
+      const reads = { ...next.readAt };
+      for (const id of request.ids) {
+        const previous = hasOwn(reads, id) ? reads[id] : undefined;
+        if (previous !== undefined && previous >= now) continue;
+        reads[id] = now;
+        changed = true;
+      }
+      if (changed) next.readAt = capReadAt(reads);
       break;
     }
   }
