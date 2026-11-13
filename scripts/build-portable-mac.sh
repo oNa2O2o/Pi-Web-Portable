@@ -1,6 +1,6 @@
 #!/bin/bash
 # Builds the macOS (Apple silicon) portable package.
-#   scripts/build-portable-mac.sh --version 1.9.2 [--repository owner/repo] [--output dir] [--archive-dir dir] [--skip-build]
+#   scripts/build-portable-mac.sh --version 1.9.3 [--repository owner/repo] [--output dir] [--archive-dir dir] [--skip-build]
 # Output: <archive-dir>/pi-web-portable-mac-arm64.zip (+ .sha256). Inside the zip is one
 # folder "Pi-Web-Portable" with "Pi Web.command" (double-click to start), app/, runtime/node.
 # Must run on macOS arm64: the bundled Node.js and the speech-recognition native module

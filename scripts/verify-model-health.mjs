@@ -3,6 +3,7 @@
 // - the model-health-ui browser plugin is injected and served
 // - the health service answers /status through the plugin API proxy
 // - /probe reports a specific, translated error for an unreachable endpoint
+// - /site-name names official hosts and relays (Sub2API, New API, page title)
 // - a foreign origin is rejected
 const port = Number(process.argv[2] || 30141);
 const base = `http://127.0.0.1:${port}`;
@@ -45,6 +46,45 @@ const balance = await (await fetch(api + '/balance', {
 })).json();
 if (balance.ok !== false || !balance.error || typeof balance.lowBalance !== 'number') fail('unexpected /balance answer: ' + JSON.stringify(balance));
 if (typeof status.balances !== 'object' || !status.settings) fail('/status has no balances: ' + JSON.stringify(status).slice(0, 200));
+
+// Site names for the Display name: an official host by name, a relay from its public
+// settings (Sub2API / New API) or home page title, nothing for a closed port.
+const { createServer } = await import('node:http');
+const siteName = async (baseUrl) => (await fetch(api + '/site-name', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ baseUrl }),
+})).json();
+const relay = (routes) => new Promise((resolve) => {
+  const server = createServer((req, res) => {
+    const hit = routes[req.url];
+    if (!hit) { res.writeHead(404); res.end('404 page not found'); return; }
+    res.writeHead(200, { 'content-type': hit.type });
+    res.end(hit.body);
+  }).listen(0, '127.0.0.1', () => resolve(server));
+});
+const json = (data) => ({ type: 'application/json', body: JSON.stringify({ success: true, data }) });
+const sub2api = await relay({ '/api/v1/settings/public': json({ site_name: '词易' }) });
+const newapi = await relay({ '/api/status': json({ system_name: 'DMXAPI官网：中国大模型API聚合平台' }) });
+const titled = await relay({ '/': { type: 'text/html', body: '<!doctype html><html><head><title>Relay Seven - AI API Gateway</title></head></html>' } });
+const generic = await relay({ '/api/status': json({ system_name: 'New API' }) });
+try {
+  const at = (server) => `http://127.0.0.1:${server.address().port}/v1`;
+  const expect = [
+    ['https://api.openai.com/v1', 'OpenAI'],
+    [at(sub2api), '词易'],
+    [at(newapi), 'DMXAPI'],
+    [at(titled), 'Relay Seven'],
+    [at(generic), null],
+    ['http://127.0.0.1:65530/v1', null],
+  ];
+  for (const [url, name] of expect) {
+    const r = await siteName(url);
+    if (name ? r.ok !== true || r.name !== name : r.ok !== false) fail(`/site-name ${url}: expected ${name}, got ${JSON.stringify(r)}`);
+  }
+} finally {
+  for (const server of [sub2api, newapi, titled, generic]) server.close();
+}
 
 const foreign = await fetch(api + '/status', { headers: { Origin: 'https://evil.example' } });
 if (foreign.status !== 403) fail('foreign origin was not rejected (HTTP ' + foreign.status + ')');

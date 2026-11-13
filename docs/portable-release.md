@@ -6,6 +6,11 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.9.3 is based on Pi Web 0.16.0 (pi 1.5.2) and names a provider after its
+relay: entering a Base URL fills an empty Display name with the site's own name
+(Sub2API site name, New API system name, or the home page title; official APIs
+by host), or offers it as a one-click suggestion when a name is already set.
+Portable
 1.9.2 shows relay balances: next to the current model in the chat composer
 (provider · balance), on each provider page (today, total, last 7 days, per
 model, alert threshold) and in the Models sidebar, with a small persistent
@@ -58,7 +63,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.9.2 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.9.3 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -110,7 +115,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.9.2 `
+  -ExpectedVersion 1.9.3 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -168,7 +173,7 @@ file by SHA256. The Pi Web application source is not modified.
 Built on macOS arm64 (the release workflow's `build-mac` job on `macos-15`):
 
 ```bash
-scripts/build-portable-mac.sh --version 1.9.2
+scripts/build-portable-mac.sh --version 1.9.3
 scripts/test-portable-mac.sh portable/dist/mac/Pi-Web-Portable
 ```
 

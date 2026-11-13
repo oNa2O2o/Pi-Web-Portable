@@ -6,6 +6,7 @@
 //   POST /test    {baseUrl, apiKey, modelId, apis[]}      真实发一条极短请求，自动匹配接口类型和 URL 写法
 //   GET  /status                                          定时检测结果
 //   POST /run     {kind:'conn'|'call'}                    立即检测
+//   POST /site-name {baseUrl}                             识别中转站名称（公开接口，不用 Key）
 //   POST /ignore  {group, ids[]}                          不再提示这些新模型
 //   POST /dismiss {id}                                    关闭一条失败提醒
 // 定时任务：每 10 分钟拉一次已启用 Provider 的模型列表（不花 token）；
@@ -450,6 +451,79 @@ async function runCall() {
   }
 }
 
+// ---------- site name ----------
+// A relay's own name ("词易"), shown as the provider's display name. Read from
+// public pages only, never with the key: Sub2API /api/v1/settings/public
+// (site_name), New API / One API /api/status (system_name), else the home
+// page <title>. Official APIs are named by host.
+const OFFICIAL_NAMES = [
+  [/(^|\.)openai\.com$/i, 'OpenAI'],
+  [/(^|\.)anthropic\.com$/i, 'Anthropic'],
+  [/(^|\.)googleapis\.com$/i, 'Google'],
+  [/(^|\.)openrouter\.ai$/i, 'OpenRouter'],
+  [/(^|\.)deepseek\.com$/i, 'DeepSeek'],
+  [/(^|\.)moonshot\.(cn|ai)$/i, 'Moonshot'],
+  [/(^|\.)siliconflow\.(cn|com)$/i, 'SiliconFlow'],
+  [/(^|\.)x\.ai$/i, 'xAI'],
+  [/(^|\.)mistral\.ai$/i, 'Mistral'],
+  [/(^|\.)groq\.com$/i, 'Groq'],
+  [/(^|\.)bigmodel\.cn$/i, '智谱'],
+  [/(^|\.)dashscope(-intl)?\.aliyuncs\.com$/i, '阿里云百炼'],
+  [/(^|\.)volces\.com$/i, '火山方舟'],
+];
+// Defaults a relay ships with, and titles of no name at all.
+const GENERIC_NAME = /^(new[\s-]?api|one[\s-]?api|sub2api|veloera|done[\s-]?hub|vite app|react app|vue app|nginx|welcome( to nginx)?|index|home|loading|404|403|not found|error|api|ai api gateway|untitled)$/i;
+const SITE_NAME_TTL = 6 * 60 * MIN;
+const siteNames = new Map();
+
+function cleanName(value) {
+  let s = String(value ?? '').replace(/<[^>]*>/g, '').replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/\s+/g, ' ').trim();
+  // "词易 - AI API Gateway" → "词易", "DMXAPI官网：中国大模型API聚合平台" → "DMXAPI"
+  s = s.split(/\s+[-–—·:]\s+|\s*[|｜：]\s*/)[0].replace(/\s*(官网|官方网站|首页)$/, '').trim();
+  if (!s || s.length > 40 || GENERIC_NAME.test(s) || /^https?:/i.test(s)) return '';
+  return s;
+}
+
+async function quickGet(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(6000), redirect: 'follow', headers: { accept: 'application/json, text/html;q=0.9' } });
+    if (!res.ok) return null;
+    return { text: (await res.text()).slice(0, 200000), ctype: res.headers.get('content-type') || '' };
+  } catch {
+    return null;
+  }
+}
+
+async function jsonField(url, pick) {
+  const r = await quickGet(url);
+  if (!r || looksHtml(r.text, r.ctype)) return '';
+  try { return cleanName(pick(JSON.parse(r.text))); } catch { return ''; }
+}
+
+async function siteName(baseUrl) {
+  let origin;
+  try { origin = new URL(trimUrl(baseUrl)).origin; } catch { return null; }
+  if (!/^https?:/i.test(origin)) return null;
+  const host = hostOf(origin);
+  const official = OFFICIAL_NAMES.find(([re]) => re.test(host));
+  if (official) return { name: official[1], source: 'host' };
+  const hit = siteNames.get(origin);
+  if (hit && Date.now() - hit.at < SITE_NAME_TTL) return hit.result;
+  const [sub2api, newapi] = await Promise.all([
+    jsonField(origin + '/api/v1/settings/public', (j) => j && j.data && j.data.site_name),
+    jsonField(origin + '/api/status', (j) => j && j.data && j.data.system_name),
+  ]);
+  let result = sub2api ? { name: sub2api, source: 'sub2api' } : newapi ? { name: newapi, source: 'newapi' } : null;
+  if (!result) {
+    const page = await quickGet(origin + '/');
+    const title = page && looksHtml(page.text, page.ctype) && /<title[^>]*>([\s\S]*?)<\/title>/i.exec(page.text);
+    const name = title ? cleanName(title[1]) : '';
+    if (name) result = { name, source: 'title' };
+  }
+  siteNames.set(origin, { at: Date.now(), result });
+  return result;
+}
+
 // ---------- balance ----------
 // Relays answer "how much is left" on different paths. Each kind returns the
 // same shape: { balance, unit, plan?, unlimited?, today?, total?, daily?, models? }.
@@ -829,6 +903,10 @@ const server = http.createServer(async (req, res) => {
       saveState();
       return send(200, publicState());
     }
+    if (route === '/site-name') {
+      const r = await siteName(body.baseUrl);
+      return send(200, r ? { ok: true, ...r } : { ok: false });
+    }
     if (route === '/balance') {
       // Either the page's current (possibly unsaved) settings, or just a saved provider name.
       const name = validName(body.provider) ? body.provider : '';
@@ -892,4 +970,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listModels, testModel, callOnce, candidates, httpError, netError, computeStatus, fetchBalance, parseSub2api, parseNewapiToken, money };
+module.exports = { listModels, testModel, callOnce, candidates, httpError, netError, computeStatus, fetchBalance, parseSub2api, parseNewapiToken, money, siteName, cleanName };

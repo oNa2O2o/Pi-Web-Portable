@@ -87,6 +87,7 @@ import {
   fetchBalance,
   balanceText,
   setLowBalance,
+  detectSiteName,
   type ProbeResult,
   type ProviderLike,
 } from "./model-auto-check";
@@ -569,6 +570,32 @@ function ProviderDetail({ name, editingName, fallbackLabel, provider, onChange, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [name, connKey]);
 
+  // The relay's own name ("词易") for the Display name. An empty name is filled in only
+  // for a new provider or a changed URL, so opening a saved provider leaves it unchanged;
+  // otherwise the field offers it as a one-click suggestion.
+  const [siteName, setSiteName] = useState<{ url: string; name: string } | null>(null);
+  const siteUrl = trimUrl(provider.baseUrl);
+  useEffect(() => {
+    if (!siteUrl) return;
+    let stopped = false;
+    const timer = setTimeout(() => {
+      void detectSiteName(siteUrl).then((found) => {
+        if (stopped || !found) return;
+        setSiteName({ url: siteUrl, name: found });
+        const current = providerRef.current;
+        const latest = latestRef.current;
+        if (current.name?.trim() || trimUrl(current.baseUrl) !== siteUrl) return;
+        if (latest.saved && trimUrl(latest.saved.baseUrl) === siteUrl) return;
+        const taken = new Set(Object.entries(latest.providers).filter(([id]) => id !== name).map(([, entry]) => entry.name?.trim()).filter(Boolean));
+        let label = found;
+        for (let n = 2; taken.has(label); n++) label = `${found} ${n}`;
+        latest.onChange(setProviderDisplayName(current, label));
+      });
+    }, 800);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [name, siteUrl]);
+  const siteSuggestion = siteName && siteName.url === siteUrl && siteName.name !== (provider.name ?? "").trim() ? siteName.name : null;
+
   // The upstream list refreshes every minute while the page is open.
   useEffect(() => {
     const timer = setInterval(() => {
@@ -764,6 +791,13 @@ function ProviderDetail({ name, editingName, fallbackLabel, provider, onChange, 
       <Field label={t("models.providerDisplayName")}>
         <TextInput value={provider.name ?? ""} onChange={(v) => onChange(setProviderDisplayName(provider, v))}
           placeholder={fallbackLabel} />
+        {siteSuggestion && (
+          <button type="button" onClick={() => onChange(setProviderDisplayName(provider, siteSuggestion))}
+            title="从这个 Base URL 的站点识别到的名称"
+            style={{ marginTop: 4, padding: "3px 10px", background: "var(--bg-hover)", border: "1px solid var(--border)", borderRadius: 4, color: "var(--text)", cursor: "pointer", fontSize: 11, alignSelf: "flex-start" }}>
+            使用识别到的名称「{siteSuggestion}」
+          </button>
+        )}
       </Field>
 
       <Field label="Base URL">

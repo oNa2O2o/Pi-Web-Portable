@@ -157,6 +157,20 @@ npm run test:models
 - 403 余额不足等 `quota` 错误后面附上当前余额（服务端 `computeStatus`、Provider 页错误框、
   模型页测试结果）。
 
+## 2026-11-13：上游 0.16.0 与中转名称（便携版 1.9.3）
+
+- 合并上游 Pi Web 0.16.0（pi 1.5.2）。冲突处两边都保留：会话文件夹/排序与上游已读同步
+  （`readAt`、`read` 动作）；`navigate_tree` 的 `preserveModel` 与上游 Stop 处理；
+  模型页 Provider 详情保留自动检测、余额、自动保存，同时有上游的 Display name 与 Provider ID。
+- 中转名称：插件服务 `POST /site-name {baseUrl}`（`siteName`）只读公开接口、不带 Key：
+  Sub2API `/api/v1/settings/public` 的 `site_name`、New API / One API `/api/status` 的
+  `system_name`，都没有再读首页 `<title>`（取分隔符前一段，去掉「官网」）；官方 API 按域名
+  直接命名。默认名（New API、Sub2API 等）和空标题不用。结果按站点缓存 6 小时。
+- 前端（`detectSiteName`，`components/ModelsConfig.tsx`）：新建 Provider 或改了 Base URL 且
+  Display name 为空时自动填入（重名加序号）；打开已保存的 Provider 不改动，名称不同时在输入框
+  下给一个「使用识别到的名称」按钮。服务未运行时什么也不做。
+- `scripts/verify-model-health.mjs` 用本地假中转覆盖这几种识别方式。
+
 ## 已有行为
 
 - 保留 `scripts/patch-pi-retry.mjs` 的临时网关错误重试及其回归测试。

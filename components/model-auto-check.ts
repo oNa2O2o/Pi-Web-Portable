@@ -357,6 +357,18 @@ export async function setLowBalance(value: number): Promise<boolean> {
   return (await health<unknown>("/settings", { lowBalance: value })) !== null;
 }
 
+/**
+ * The relay's own name for a Base URL ("词易" for api.chiyi.cc), read by the health
+ * service from the site's public settings or home page title, never with the key.
+ * Null when the site doesn't say or the service isn't running.
+ */
+export async function detectSiteName(baseUrl?: string): Promise<string | null> {
+  const url = trimUrl(baseUrl);
+  if (!/^https?:\/\/[^/\s]+\.[^/\s]+/i.test(url)) return null;
+  const result = await health<{ ok?: boolean; name?: string }>("/site-name", { baseUrl: url });
+  return result?.ok && typeof result.name === "string" && result.name.trim() ? result.name.trim() : null;
+}
+
 /** Runs `fn` over `items`, at most `limit` at a time. */
 export async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
   let next = 0;
