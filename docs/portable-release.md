@@ -6,6 +6,11 @@ selected model when editing/resending a failed prompt. `build` and
 `build:portable` run the required SDK/session regression checks before compiling.
 
 The portable version and Pi Web application version are separate. Portable
+1.9.4 bundles Pi Web 0.17.0 (pi 1.5.2): an Agents strip under the chat toolbar
+while a subagent or side chat is shown (with a padlock to keep it on the main
+agent), side-chat text in session search, one completion chime across pages,
+single uploads up to 100MB, shorter settings copy and IME fixes, on top of all
+local additions. Portable
 1.9.3 is based on Pi Web 0.16.0 (pi 1.5.2) and names a provider after its
 relay: entering a Base URL fills an empty Display name with the site's own name
 (Sub2API site name, New API system name, or the home page title; official APIs
@@ -63,7 +68,7 @@ endpoint's rejected system documentation index with on-demand references.
 Build from a checkout with the required Node.js runtime:
 
 ```powershell
-.\scripts\build-portable.ps1 -PortableVersion 1.9.3 -RuntimeDir C:\path\to\node
+.\scripts\build-portable.ps1 -PortableVersion 1.9.4 -RuntimeDir C:\path\to\node
 .\scripts\build-portable-exe.ps1
 ```
 
@@ -115,7 +120,7 @@ After publication, test the real online upgrade from an older release:
 ```powershell
 powershell.exe -NoProfile -File .\scripts\test-published-portable-update.ps1 `
   -PreviousArchive C:\path\to\previous-release.zip `
-  -ExpectedVersion 1.9.3 `
+  -ExpectedVersion 1.9.4 `
   -ResultPath C:\path\to\online-upgrade-result.json
 ```
 
@@ -173,7 +178,7 @@ file by SHA256. The Pi Web application source is not modified.
 Built on macOS arm64 (the release workflow's `build-mac` job on `macos-15`):
 
 ```bash
-scripts/build-portable-mac.sh --version 1.9.3
+scripts/build-portable-mac.sh --version 1.9.4
 scripts/test-portable-mac.sh portable/dist/mac/Pi-Web-Portable
 ```
 
