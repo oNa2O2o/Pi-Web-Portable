@@ -66,7 +66,10 @@
     window.__piwebPreselect = { provider: name, ids };
     window.dispatchEvent(new CustomEvent('piweb:preselect-models', { detail: window.__piwebPreselect }));
     const label = ((hcfg && hcfg.providers && hcfg.providers[name] && hcfg.providers[name].name) || name).trim();
-    for (const btn of panel.querySelectorAll('.config-sidebar-item:not(.models-sidebar-indented-item)')) {
+    const items = [...panel.querySelectorAll('.config-sidebar-item:not(.models-sidebar-indented-item)')];
+    const exact = items.find((btn) => btn.dataset.mhProvider === name);
+    if (exact) { exact.click(); return; }
+    for (const btn of items) {
       const text = (btn.querySelector('.config-sidebar-text') || {}).textContent;
       if (text && text.trim() === label) { btn.click(); break; }
     }
@@ -143,15 +146,36 @@ ${new Date(a.at).toLocaleString()} 查询
     if (!panel || !hstate) return;
     if (!hcfg) { cfgLoading = cfgLoading || loadCfg().then(() => { cfgLoading = null; if (hcfg) decorate(); }); return; }
     const providers = hcfg.providers || {};
+    // Several providers can share one display name (e.g. three "词易" entries for
+    // Claude / GPT / Gemini on the same relay). The sidebar lists them in
+    // models.json order, so take same-label providers in order, preferring the one
+    // whose model count matches the rows under the button.
     const byLabel = new Map();
-    for (const [n, p] of Object.entries(providers)) byLabel.set(((p && p.name) || n).trim(), n);
+    for (const [n, p] of Object.entries(providers)) {
+      const l = ((p && p.name) || n).trim();
+      if (!byLabel.has(l)) byLabel.set(l, []);
+      byLabel.get(l).push(n);
+    }
     const list = panel.querySelector('.config-sidebar-list');
     if (list) {
       for (const btn of list.querySelectorAll('.config-sidebar-item:not(.models-sidebar-indented-item)')) {
         const label = (btn.querySelector('.config-sidebar-text') || {}).textContent;
-        const name = label && byLabel.get(label.trim());
+        const queue = label && byLabel.get(label.trim());
+        const rowsEl = [...btn.parentElement.children].filter((c) => c.matches && c.matches('.config-sidebar-item.models-sidebar-indented-item'));
+        let name = null;
+        if (queue && queue.length) {
+          const count = rowsEl.filter((c) => !c.classList.contains('models-sidebar-add-item')).length;
+          let idx = queue.length > 1 ? queue.findIndex((n) => ((providers[n] && providers[n].models) || []).length === count) : 0;
+          if (idx < 0) idx = 0;
+          name = queue.splice(idx, 1)[0];
+        }
+        if (name) btn.dataset.mhProvider = name; else delete btn.dataset.mhProvider;
         const rec = name && hstate.providers[name];
-        if (!rec) continue;
+        if (!rec) {
+          for (const old of btn.querySelectorAll(':scope > .mh-dot, :scope > .mh-bal')) old.remove();
+          for (const row of rowsEl) { const old = row.querySelector(':scope > .mh-mdot'); if (old) old.remove(); }
+          continue;
+        }
         const status = rec.status || 'unknown';
         const tip = `${name}：${STATUS_TEXT[status] || status}${rec.reason ? '\n' + rec.reason : ''}${rec.conn && rec.conn.hint ? '\n' + rec.conn.hint : ''}\n连通性检测 ${fmtTime(rec.conn && rec.conn.at)}（每 10 分钟）\n真实调用 ${fmtTime(hstate.call.lastRun)}（每 6 小时）`;
         setNode(btn, 'mh-dot ' + status, status + tip, (el) => { el.title = tip; });
@@ -167,7 +191,6 @@ ${new Date(a.at).toLocaleString()} 查询
         }
         // model rows that follow inside the same wrapper
         const models = (providers[name] && providers[name].models) || [];
-        const rowsEl = [...btn.parentElement.children].filter((c) => c.matches && c.matches('.config-sidebar-item.models-sidebar-indented-item'));
         rowsEl.forEach((row, i) => {
           const m = models[i];
           const t = m && rec.models && rec.models[m.id];
@@ -235,7 +258,7 @@ ${new Date(a.at).toLocaleString()} 查询
   // The Models page reports each check it runs; refresh the dots right away.
   window.addEventListener('piweb:model-health-changed', () => {
     clearTimeout(changedTimer);
-    changedTimer = setTimeout(() => { hcfg = null; pollHealth(); }, 400);
+    changedTimer = setTimeout(() => { hcfg = null; pollHealth(); }, 150);
   });
   let changedTimer = 0;
 })();

@@ -180,6 +180,13 @@ npm run test:models
 - 本机 `npm test` 中 Windows 环境相关（符号链接、junction、Git 等）的失败数与纯上游 0.17.0 一致，
   合并未新增失败；`npm run test:models` 全部通过。
 
+## 2026-11-19：同名 Provider 的检测圆点（便携版 1.9.5）
+
+- 多个 Provider 用同一个 Display name（例如 Claude / GPT / Gemini 都叫「词易」）时，左栏圆点按名字查找，
+  全部显示成最后一个同名 Provider 的结果：测试通过的 Provider 仍显示红点。现在同名的按 models.json 顺序
+  （与左栏一致）逐个对应，并核对模型行数；没有记录的条目会去掉旧圆点。「查看」新模型也打开正确的 Provider。
+- 模型页测试完成后刷新圆点的延迟从 400ms 改为 150ms。
+
 ## 已有行为
 
 - 保留 `scripts/patch-pi-retry.mjs` 的临时网关错误重试及其回归测试。
